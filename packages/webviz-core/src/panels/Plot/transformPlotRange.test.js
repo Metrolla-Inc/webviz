@@ -7,7 +7,7 @@
 //  You may not use this file except in compliance with the License.
 
 import { derivative, applyToDataOrTooltips, mathFunctions } from "./transformPlotRange";
-import { type TimeBasedChartTooltipData } from "webviz-core/src/components/TimeBasedChart";
+import { type TimeBasedChartTooltipData } from "webviz-core/src/components/TimeBasedChart/utils";
 
 describe("transformPlotRange", () => {
   describe("derivative", () => {
@@ -150,5 +150,15 @@ describe("transformPlotRange", () => {
         { x: 2, y: 1.5, datasetKey: "0" },
       ]);
     });
+  });
+
+  it("rad2deg converts radians to degrees", () => {
+    const items = [{ x: 1, y: Math.PI }];
+    expect(applyToDataOrTooltips(items, mathFunctions.rad2deg)).toEqual([{ x: 1, y: 180 }]);
+  });
+
+  it("deg2rad converts degrees to radians", () => {
+    const items = [{ x: 1, y: 180 }];
+    expect(applyToDataOrTooltips(items, mathFunctions.deg2rad)).toEqual([{ x: 1, y: Math.PI }]);
   });
 });

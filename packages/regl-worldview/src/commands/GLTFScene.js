@@ -38,6 +38,15 @@ function glConstantToRegl(value: ?number): ?string {
   throw new Error(`unhandled constant value ${JSON.stringify(value)}`);
 }
 
+// Default sampler set based on GLTF recommendations:
+// https://github.com/KhronosGroup/glTF/blob/master/specification/2.0/README.md#texture
+const getDefaultSampler = () => ({
+  minFilter: WebGLRenderingContext.NEAREST_MIPMAP_LINEAR,
+  magFilter: WebGLRenderingContext.LINEAR,
+  wrapS: WebGLRenderingContext.REPEAT,
+  wrapT: WebGLRenderingContext.REPEAT,
+});
+
 const getSceneToDraw = ({ json }) => {
   if (json.scene != null) {
     return json.scene;
@@ -132,7 +141,7 @@ const drawModel = (regl) => {
     const textures =
       model.json.textures &&
       model.json.textures.map((textureInfo) => {
-        const sampler = model.json.samplers[textureInfo.sampler];
+        const sampler = textureInfo.sampler ? model.json.samplers[textureInfo.sampler] : getDefaultSampler();
         const bitmap = model.images && model.images[textureInfo.source];
         const texture = regl.texture({
           data: bitmap,
@@ -262,24 +271,21 @@ function useAsyncValue<T>(fn: () => Promise<T>, deps: ?(any[])): ?T {
 
 function useModel(model: string | (() => Promise<GLBModel>)): ?GLBModel {
   useDebugValue(model);
-  return useAsyncValue(
-    async () => {
-      if (typeof model === "function") {
-        return model();
+  return useAsyncValue(async () => {
+    if (typeof model === "function") {
+      return model();
+    }
+    if (typeof model === "string") {
+      const response = await fetch(model);
+      if (!response.ok) {
+        throw new Error(`failed to fetch GLTF model: ${response.status}`);
       }
-      if (typeof model === "string") {
-        const response = await fetch(model);
-        if (!response.ok) {
-          throw new Error(`failed to fetch GLTF model: ${response.status}`);
-        }
-        return parseGLB(await response.arrayBuffer());
-      }
+      return parseGLB(await response.arrayBuffer());
+    }
 
-      /*:: (model: empty) */
-      throw new Error(`unsupported model prop: ${typeof model}`);
-    },
-    [model]
-  );
+    /*:: (model: empty) */
+    throw new Error(`unsupported model prop: ${typeof model}`);
+  }, [model]);
 }
 
 export default function GLTFScene(props: Props) {
@@ -287,14 +293,11 @@ export default function GLTFScene(props: Props) {
 
   const context = useContext(WorldviewReactContext);
   const loadedModel = useModel(model);
-  useEffect(
-    () => {
-      if (context) {
-        context.onDirty();
-      }
-    },
-    [context, loadedModel]
-  );
+  useEffect(() => {
+    if (context) {
+      context.onDirty();
+    }
+  }, [context, loadedModel]);
 
   if (!loadedModel) {
     return null;

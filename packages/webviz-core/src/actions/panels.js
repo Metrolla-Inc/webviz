@@ -5,7 +5,10 @@
 //  This source code is licensed under the Apache License, Version 2.0,
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
+import CBOR from "cbor-js";
+import { cloneDeep } from "lodash";
 import type { MosaicDropTargetPosition, MosaicPath } from "react-mosaic-component";
+import zlib from "zlib";
 
 import { getGlobalHooks } from "webviz-core/src/loadWebviz";
 import { type LinkedGlobalVariables } from "webviz-core/src/panels/ThreeDimensionalViz/Interactions/useLinkedGlobalVariables";
@@ -25,7 +28,9 @@ import type {
   PanelConfig,
   SetFetchedLayoutPayload,
 } from "webviz-core/src/types/panels";
-import { LAYOUT_URL_QUERY_KEY } from "webviz-core/src/util/globalConstants";
+import { LAYOUT_URL_QUERY_KEY, PATCH_QUERY_KEY } from "webviz-core/src/util/globalConstants";
+import { dictForPatchCompression } from "webviz-core/src/util/layout";
+import sendNotification from "webviz-core/src/util/sendNotification";
 
 export const PANELS_ACTION_TYPES = {
   CHANGE_PANEL_LAYOUT: "CHANGE_PANEL_LAYOUT",
@@ -50,7 +55,10 @@ export const PANELS_ACTION_TYPES = {
   SET_FETCH_LAYOUT_FAILED: "SET_FETCH_LAYOUT_FAILED",
   LOAD_LAYOUT: "LOAD_LAYOUT",
   CLEAR_LAYOUT_URL_REPLACED_BY_DEFAULT: "CLEAR_LAYOUT_URL_REPLACED_BY_DEFAULT",
+  SET_FULL_SCREEN_PANEL: "SET_FULL_SCREEN_PANEL",
+  CLEAR_FULL_SCREEN_PANEL: "CLEAR_FULL_SCREEN_PANEL",
 };
+const jsondiffpatch = require("jsondiffpatch").create({});
 
 export type SAVE_PANEL_CONFIGS = { type: "SAVE_PANEL_CONFIGS", payload: SaveConfigsPayload };
 export type SAVE_FULL_PANEL_CONFIG = { type: "SAVE_FULL_PANEL_CONFIG", payload: SaveFullConfigPayload };
@@ -103,9 +111,39 @@ export const clearLayoutUrlReplacedByDefault = (): Dispatcher<CLEAR_LAYOUT_URL_R
   return dispatch({ type: PANELS_ACTION_TYPES.CLEAR_LAYOUT_URL_REPLACED_BY_DEFAULT });
 };
 
+export function applyPatchToLayout(patch: ?string, layout: PanelsState): PanelsState {
+  if (!patch) {
+    return layout;
+  }
+  try {
+    const patchBuffer = Buffer.from(patch, "base64");
+    const dictionaryBuffer = Buffer.from(CBOR.encode(dictForPatchCompression));
+    const uint8Arr = zlib.inflateSync(patchBuffer, { dictionary: dictionaryBuffer });
+
+    if (!uint8Arr) {
+      return layout;
+    }
+
+    const buffer = uint8Arr.buffer.slice(uint8Arr.byteOffset, uint8Arr.byteLength + uint8Arr.byteOffset);
+    const bufferToJS = CBOR.decode(buffer);
+    const clonedLayout = cloneDeep(layout);
+    jsondiffpatch.patch(clonedLayout, bufferToJS);
+    return clonedLayout;
+  } catch (e) {
+    sendNotification(
+      "Failed to apply patch on top of the layout.",
+      `Ignoring the patch "${patch}".\n\n${e}`,
+      "user",
+      "warn"
+    );
+    return layout;
+  }
+}
+
 export const fetchLayout = (search: string): Dispatcher<SET_FETCHED_LAYOUT> => (dispatch) => {
   const params = new URLSearchParams(search);
   const hasLayoutUrl = params.get(LAYOUT_URL_QUERY_KEY);
+  const patch = params.get(PATCH_QUERY_KEY);
   dispatch({ type: PANELS_ACTION_TYPES.SET_FETCHED_LAYOUT, payload: { isLoading: true } });
   return getGlobalHooks()
     .getLayoutFromUrl(search)
@@ -113,18 +151,24 @@ export const fetchLayout = (search: string): Dispatcher<SET_FETCHED_LAYOUT> => (
       dispatch({
         type: PANELS_ACTION_TYPES.SET_FETCHED_LAYOUT,
         // Omitting `isInitializedFromLocalStorage` whenever we get a new fetched layout.
-        payload: { isLoading: false, data: layoutFetchResult, isFromLayoutUrlParam: !!hasLayoutUrl },
+        payload: {
+          isLoading: false,
+          data: {
+            ...layoutFetchResult,
+            content: getGlobalHooks().migratePanels(layoutFetchResult.content || layoutFetchResult),
+          },
+          isFromLayoutUrlParam: !!hasLayoutUrl,
+        },
       });
       if (layoutFetchResult) {
         if (hasLayoutUrl) {
-          dispatch({
-            type: PANELS_ACTION_TYPES.LOAD_LAYOUT,
-            payload: layoutFetchResult,
-          });
+          const patchedLayout = applyPatchToLayout(patch, layoutFetchResult.content || layoutFetchResult);
+          dispatch({ type: PANELS_ACTION_TYPES.LOAD_LAYOUT, payload: patchedLayout });
         } else if (layoutFetchResult.content) {
+          const patchedLayout = applyPatchToLayout(patch, layoutFetchResult.content);
           dispatch({
             type: PANELS_ACTION_TYPES.LOAD_LAYOUT,
-            payload: layoutFetchResult.content,
+            payload: patchedLayout,
           });
         }
       }
@@ -258,6 +302,29 @@ export const endDrag = (payload: EndDragPayload): END_DRAG => ({
   payload,
 });
 
+export type SET_FULL_SCREEN_PANEL = $ReadOnly<{|
+  type: "SET_FULL_SCREEN_PANEL",
+  payload: $ReadOnly<{| panelId: string, locked: boolean |}>,
+|}>;
+
+export const setFullScreenPanel = (panelId: string, locked: boolean): SET_FULL_SCREEN_PANEL => ({
+  type: "SET_FULL_SCREEN_PANEL",
+  payload: { panelId, locked },
+});
+
+export type CLEAR_FULL_SCREEN_PANEL = $ReadOnly<{|
+  type: "CLEAR_FULL_SCREEN_PANEL",
+  // Provide panelId so panels don't clear each other's state by mistake. If we ever want to clear
+  // the fullscreen state regardless of who set it, we could make the id optional, or make a new
+  // action.
+  payload: $ReadOnly<{| panelId: string |}>,
+|}>;
+
+export const clearFullScreenPanel = (panelId: string): CLEAR_FULL_SCREEN_PANEL => ({
+  type: "CLEAR_FULL_SCREEN_PANEL",
+  payload: { panelId },
+});
+
 export type PanelsActions =
   | CHANGE_PANEL_LAYOUT
   | IMPORT_PANEL_LAYOUT
@@ -280,7 +347,9 @@ export type PanelsActions =
   | SET_FETCHED_LAYOUT
   | SET_FETCH_LAYOUT_FAILED
   | LOAD_LAYOUT
-  | CLEAR_LAYOUT_URL_REPLACED_BY_DEFAULT;
+  | CLEAR_LAYOUT_URL_REPLACED_BY_DEFAULT
+  | SET_FULL_SCREEN_PANEL
+  | CLEAR_FULL_SCREEN_PANEL;
 
 type PanelsActionTypes = $Values<typeof PANELS_ACTION_TYPES>;
 export const panelEditingActions = new Set<PanelsActionTypes>(Object.keys(PANELS_ACTION_TYPES));

@@ -7,12 +7,13 @@
 //  You may not use this file except in compliance with the License.
 
 import { useCleanup } from "@cruise-automation/hooks";
+import memoizeOne from "memoize-one";
 import { useRef, useCallback, useMemo, useState, useEffect, useContext } from "react";
 import uuid from "uuid";
 
 import { useMessagePipeline } from "webviz-core/src/components/MessagePipeline";
 import PanelContext from "webviz-core/src/components/PanelContext";
-import type { Message, SubscribePayload } from "webviz-core/src/players/types";
+import type { Message, SubscribePayload, Topic } from "webviz-core/src/players/types";
 import {
   useChangeDetector,
   useShouldNotChangeOften,
@@ -82,26 +83,23 @@ function useSubscriptions({
   preloadingFallback: boolean,
   format: "parsedMessages" | "bobjects",
 |}): SubscribePayload[] {
-  return useMemo(
-    () => {
-      const commonFields: $Shape<SubscribePayload> = { preloadingFallback, format };
-      if (panelType) {
-        commonFields.requester = { type: "panel", name: panelType };
+  return useMemo(() => {
+    const commonFields: $Shape<SubscribePayload> = { preloadingFallback, format };
+    if (panelType) {
+      commonFields.requester = { type: "panel", name: panelType };
+    }
+    return requestedTopics.map((request) => {
+      if (typeof request === "object") {
+        // We might be able to remove the `encoding` field from the protocol entirely, and only
+        // use scale. Or we can deal with scaling down in a different way altogether, such as having
+        // special topics or syntax for scaled down versions of images or so. In any case, we should
+        // be cautious about having metadata on subscriptions, as that leads to the problem of how to
+        // deal with multiple subscriptions to the same topic but with different metadata.
+        return { ...commonFields, topic: request.topic, encoding: "image/compressed", scale: request.imageScale };
       }
-      return requestedTopics.map((request) => {
-        if (typeof request === "object") {
-          // We might be able to remove the `encoding` field from the protocol entirely, and only
-          // use scale. Or we can deal with scaling down in a different way altogether, such as having
-          // special topics or syntax for scaled down versions of images or so. In any case, we should
-          // be cautious about having metadata on subscriptions, as that leads to the problem of how to
-          // deal with multiple subscriptions to the same topic but with different metadata.
-          return { ...commonFields, topic: request.topic, encoding: "image/compressed", scale: request.imageScale };
-        }
-        return { ...commonFields, topic: request };
-      });
-    },
-    [preloadingFallback, format, panelType, requestedTopics]
-  );
+      return { ...commonFields, topic: request };
+    });
+  }, [preloadingFallback, format, panelType, requestedTopics]);
 }
 
 const NO_MESSAGES = Object.freeze([]);
@@ -117,9 +115,9 @@ type Props<T> = {|
   addMessages?: MessagesReducer<T>,
   addBobjects?: MessagesReducer<T>,
 
-  // If the messages are in blocks and _all_ subscribers set `preloadingFallback`, addMessage
-  // won't receive these messages. This is a useful optimization for "preloading fallback"
-  // subscribers.
+  // If the messages are in blocks and `preloadingFallback` is set, addMessage won't receive
+  // these messages. This is a useful optimization for subscribers that only exist to support
+  // cases when the messages aren't preloadable (node/websocket players.)
   // TODO(steel): Eventually we should deprecate these multiple ways of getting data, and we should
   // always have blocks available. Then `useMessageReducer` should just become a wrapper around
   // `useBlocksByTopic` for backwards compatibility.
@@ -169,15 +167,19 @@ export function useMessageReducer<T>(props: Props<T>): T {
     preloadingFallback: !!props.preloadingFallback,
     format,
   });
-  const setSubscriptions = useMessagePipeline(
-    useCallback(({ setSubscriptions: pipelineSetSubscriptions }) => pipelineSetSubscriptions, [])
+  const { setSubscriptions, requestBackfill, lastSeekTime } = useMessagePipeline(
+    useCallback(
+      (messagePipeline) => ({
+        setSubscriptions: messagePipeline.setSubscriptions,
+        requestBackfill: messagePipeline.requestBackfill,
+        lastSeekTime: messagePipeline.playerState.activeData ? messagePipeline.playerState.activeData.lastSeekTime : 0,
+      }),
+      []
+    )
   );
   useEffect(() => setSubscriptions(id, subscriptions), [id, setSubscriptions, subscriptions]);
   useCleanup(() => setSubscriptions(id, []));
 
-  const requestBackfill = useMessagePipeline(
-    useCallback(({ requestBackfill: pipelineRequestBackfill }) => pipelineRequestBackfill, [])
-  );
   // Whenever `subscriptions` change, request a backfill, since we'd like to show fresh data.
   useEffect(() => requestBackfill(), [requestBackfill, subscriptions]);
 
@@ -188,28 +190,34 @@ export function useMessageReducer<T>(props: Props<T>): T {
   // selector's dependencies aren't allowed to change.
   const latestRequestedTopicsRef = useRef(requestedTopicsSet);
   latestRequestedTopicsRef.current = requestedTopicsSet;
-  const messages = useMessagePipeline<Message[]>(
-    useCallback(
-      ({ playerState: { activeData } }) => {
-        if (!activeData) {
-          return NO_MESSAGES; // identity must not change to avoid unnecessary re-renders
-        }
-        const messageData = format === "bobjects" ? activeData.bobjects : activeData.messages;
-        if (lastProcessedMessagesRef.current === messageData) {
-          return useContextSelector.BAILOUT;
-        }
-        const filteredMessages = messageData.filter(({ topic }) => latestRequestedTopicsRef.current.has(topic));
-        // Bail out if we didn't want any of these messages, but not if this is our first render
-        const shouldBail = lastProcessedMessagesRef.current && filteredMessages.length === 0;
-        lastProcessedMessagesRef.current = messageData;
-        return shouldBail ? useContextSelector.BAILOUT : filteredMessages;
-      },
-      [format]
-    )
+  // Finding the set of preloadable topics outside the callback causes rerenders, but doing this
+  // calculation without memoization is a bit expensive. Putting a memo here works well, though.
+  const getTopicsToIgnore = useCallback(
+    memoizeOne((preloadingFallback: boolean, topics: Topic[]) =>
+      preloadingFallback ? new Set(topics.filter((t) => t.preloadable).map((t) => t.name)) : new Set()
+    ),
+    []
   );
 
-  const lastSeekTime = useMessagePipeline(
-    useCallback(({ playerState: { activeData } }) => (activeData ? activeData.lastSeekTime : 0), [])
+  const { messages } = useMessagePipeline<{ messages: Message[] }>(
+    useCallback(({ playerState: { activeData } }) => {
+      if (!activeData) {
+        return { messages: NO_MESSAGES }; // identity must not change to avoid unnecessary re-renders
+      }
+      const messageData = format === "bobjects" ? activeData.bobjects : activeData.messages;
+      if (lastProcessedMessagesRef.current === messageData) {
+        return useContextSelector.BAILOUT;
+      }
+
+      const topicsToIgnore = getTopicsToIgnore(!!props.preloadingFallback, activeData.topics);
+      const filteredMessages = messageData.filter(
+        ({ topic }) => latestRequestedTopicsRef.current.has(topic) && !topicsToIgnore.has(topic)
+      );
+      // Bail out if we didn't want any of these messages, but not if this is our first render
+      const shouldBail = lastProcessedMessagesRef.current && filteredMessages.length === 0;
+      lastProcessedMessagesRef.current = messageData;
+      return shouldBail ? useContextSelector.BAILOUT : { messages: filteredMessages };
+    }, [format, getTopicsToIgnore, props.preloadingFallback])
   );
 
   return useReducedValue<T>(

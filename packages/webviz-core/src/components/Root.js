@@ -5,6 +5,7 @@
 //  This source code is licensed under the Apache License, Version 2.0,
 //  found in the LICENSE file in the root directory of this source tree.
 //  You may not use this file except in compliance with the License.
+import cx from "classnames";
 import { ConnectedRouter } from "connected-react-router";
 import React, { useEffect, useRef } from "react";
 import { hot } from "react-hot-loader/root";
@@ -19,21 +20,18 @@ import Logo from "webviz-core/src/assets/logo.svg";
 import AppMenu from "webviz-core/src/components/AppMenu";
 import ErrorBoundary from "webviz-core/src/components/ErrorBoundary";
 import LayoutMenu from "webviz-core/src/components/LayoutMenu";
-import { MessagePipelineConsumer, type MessagePipelineContext } from "webviz-core/src/components/MessagePipeline";
 import NotificationDisplay from "webviz-core/src/components/NotificationDisplay";
 import PanelLayout from "webviz-core/src/components/PanelLayout";
 import PlaybackControls from "webviz-core/src/components/PlaybackControls";
 import PlayerManager from "webviz-core/src/components/PlayerManager";
-import SelectableTimestamp from "webviz-core/src/components/SelectableTimestamp";
 import ShortcutsModal from "webviz-core/src/components/ShortcutsModal";
 import { TinyConnectionPicker } from "webviz-core/src/components/TinyConnectionPicker";
 import Toolbar from "webviz-core/src/components/Toolbar";
 import withDragDropContext from "webviz-core/src/components/withDragDropContext";
 import type { State } from "webviz-core/src/reducers";
 import getGlobalStore from "webviz-core/src/store/getGlobalStore";
-import inScreenshotTests from "webviz-core/src/stories/inScreenshotTests";
 import { setReactHotLoaderConfig } from "webviz-core/src/util/dev";
-import browserHistory from "webviz-core/src/util/history";
+import history from "webviz-core/src/util/history";
 import inAutomatedRunMode from "webviz-core/src/util/inAutomatedRunMode";
 // Only used in dev.
 setReactHotLoaderConfig();
@@ -51,17 +49,14 @@ type Props = {|
 
 function App({ importPanelLayout: importPanelLayoutProp }) {
   const containerRef = useRef<?HTMLDivElement>(undefined);
-  useEffect(
-    () => {
-      // Focus on page load to enable keyboard interaction.
-      if (containerRef.current) {
-        containerRef.current.focus();
-      }
-      // Add a hook for integration tests.
-      window.setPanelLayout = (payload) => importPanelLayoutProp(payload);
-    },
-    [importPanelLayoutProp]
-  );
+  useEffect(() => {
+    // Focus on page load to enable keyboard interaction.
+    if (containerRef.current) {
+      containerRef.current.focus();
+    }
+    // Add a hook for integration tests.
+    window.setPanelLayout = (payload) => importPanelLayoutProp(payload);
+  }, [importPanelLayoutProp]);
 
   return (
     <div ref={containerRef} className="app-container" tabIndex={0}>
@@ -77,29 +72,6 @@ function App({ importPanelLayout: importPanelLayoutProp }) {
                   </a>
                   webviz
                 </div>
-                <MessagePipelineConsumer>
-                  {({ playerState, seekPlayback, pausePlayback }: MessagePipelineContext) => {
-                    if (inScreenshotTests()) {
-                      // In our open-source integration test the Rosbridge playback emits messages
-                      // at the current timestamp, so this always looks different in screenshots.
-                      return null;
-                    }
-                    if (!playerState.activeData) {
-                      return null;
-                    }
-                    const { currentTime, startTime, endTime } = playerState.activeData;
-
-                    return (
-                      <SelectableTimestamp
-                        pausePlayback={pausePlayback}
-                        seekPlayback={seekPlayback}
-                        currentTime={currentTime}
-                        startTime={startTime}
-                        endTime={endTime}
-                      />
-                    );
-                  }}
-                </MessagePipelineConsumer>
               </div>
 
               <div className={styles.block} style={{ marginRight: 5 }}>
@@ -118,7 +90,7 @@ function App({ importPanelLayout: importPanelLayoutProp }) {
                 <SettingsMenu />
               </div>
             </Toolbar>
-            <div className={styles.layout}>
+            <div className={cx(styles.layout, "PanelLayout-root")}>
               <PanelLayout />
             </div>
             <div className={styles["playback-controls"]}>
@@ -142,7 +114,7 @@ const ConnectedApp = connect<Props, { history: any }, _, _, _, _>(
 const Root = () => {
   return (
     <Provider store={getGlobalStore()}>
-      <ConnectedRouter history={browserHistory}>
+      <ConnectedRouter history={history}>
         <div className="app-container" key="0">
           <ErrorBoundary>
             <Route path="/" render={({ history: routeHistory }) => <ConnectedApp history={routeHistory} />} />

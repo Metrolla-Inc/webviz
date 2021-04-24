@@ -37,26 +37,23 @@ export type MessagePathDataItem = {|
 // reference, as long as topics/datatypes/global variables haven't changed in the meantime.
 export function useCachedGetMessagePathDataItems(
   paths: string[]
-): (path: string, message: ReflectiveMessage) => ?(MessagePathDataItem[]) {
+): (path: string, message: ReflectiveMessage, bigInt: ?true) => ?(MessagePathDataItem[]) {
   const { topics: providerTopics, datatypes } = PanelAPI.useDataSourceInfo();
   const { globalVariables } = useGlobalVariables();
   const memoizedPaths: string[] = useShallowMemo<string[]>(paths);
 
   // We first fill in global variables in the paths, so we can later see which paths have really
   // changed when the global variables have changed.
-  const unmemoizedFilledInPaths: { [string]: RosPath } = useMemo(
-    () => {
-      const filledInPaths = {};
-      for (const path of memoizedPaths) {
-        const rosPath = parseRosPath(path);
-        if (rosPath) {
-          filledInPaths[path] = fillInGlobalVariablesInPath(rosPath, globalVariables);
-        }
+  const unmemoizedFilledInPaths: { [string]: RosPath } = useMemo(() => {
+    const filledInPaths = {};
+    for (const path of memoizedPaths) {
+      const rosPath = parseRosPath(path);
+      if (rosPath) {
+        filledInPaths[path] = fillInGlobalVariablesInPath(rosPath, globalVariables);
       }
-      return filledInPaths;
-    },
-    [globalVariables, memoizedPaths]
-  );
+    }
+    return filledInPaths;
+  }, [globalVariables, memoizedPaths]);
   const memoizedFilledInPaths = useDeepMemo<{ [string]: RosPath }>(unmemoizedFilledInPaths);
 
   // Cache MessagePathDataItem arrays by Message. We need to clear out this cache whenever
@@ -80,29 +77,26 @@ export function useCachedGetMessagePathDataItems(
     }
   }
 
-  return useCallback(
-    (path: string, message: ReflectiveMessage): ?(MessagePathDataItem[]) => {
-      if (!memoizedPaths.includes(path)) {
-        throw new Error(`path (${path}) was not in the list of cached paths`);
-      }
-      const filledInPath = memoizedFilledInPaths[path];
-      if (!filledInPath) {
-        return;
-      }
-      if (!cachesByPath.current[path]) {
-        cachesByPath.current[path] = { filledInPath, weakMap: new WeakMap() };
-      }
-      const { weakMap } = cachesByPath.current[path];
-      if (!weakMap.has(message)) {
-        const messagePathDataItems = getMessagePathDataItems(message, filledInPath, providerTopics, datatypes);
-        weakMap.set(message, messagePathDataItems);
-        return messagePathDataItems;
-      }
-      const messagePathDataItems = weakMap.get(message);
+  return useCallback((path: string, message: ReflectiveMessage, bigInt: ?true): ?(MessagePathDataItem[]) => {
+    if (!memoizedPaths.includes(path)) {
+      throw new Error(`path (${path}) was not in the list of cached paths`);
+    }
+    const filledInPath = memoizedFilledInPaths[path];
+    if (!filledInPath) {
+      return;
+    }
+    if (!cachesByPath.current[path]) {
+      cachesByPath.current[path] = { filledInPath, weakMap: new WeakMap() };
+    }
+    const { weakMap } = cachesByPath.current[path];
+    if (!weakMap.has(message)) {
+      const messagePathDataItems = getMessagePathDataItems(message, filledInPath, providerTopics, datatypes, bigInt);
+      weakMap.set(message, messagePathDataItems);
       return messagePathDataItems;
-    },
-    [datatypes, memoizedFilledInPaths, memoizedPaths, providerTopics]
-  );
+    }
+    const messagePathDataItems = weakMap.get(message);
+    return messagePathDataItems;
+  }, [datatypes, memoizedFilledInPaths, memoizedPaths, providerTopics]);
 }
 
 function filterMatches(filter: MessagePathFilter, value: any) {
@@ -169,7 +163,8 @@ export function getMessagePathDataItems(
   message: ReflectiveMessage,
   filledInPath: RosPath,
   providerTopics: $ReadOnlyArray<Topic>,
-  datatypes: RosDatatypes
+  datatypes: RosDatatypes,
+  bigInt: ?true
 ): ?(MessagePathDataItem[]) {
   const structures = messagePathStructures(datatypes);
   const topic = getTopicsByTopicName(providerTopics)[filledInPath.topicName];
@@ -218,7 +213,7 @@ export function getMessagePathDataItems(
       const next = structureItem.nextByName[pathItem.name];
       const nextStructIsJson = next && next.structureType === "primitive" && next?.primitiveType === "json";
       traverse(
-        getField(value, pathItem.name),
+        getField(value, pathItem.name, bigInt),
         pathIndex + 1,
         `${path}.${pathItem.name}`,
         !nextStructIsJson ? next : { structureType: "primitive", primitiveType: "json", datatype: "" }
@@ -248,7 +243,7 @@ export function getMessagePathDataItems(
       const arrayLength = getField(value, "length");
       for (let i = startIdx; i <= Math.min(endIdx, arrayLength - 1); i++) {
         const index = i >= 0 ? i : arrayLength + i;
-        const arrayElement = getIndex(value, index);
+        const arrayElement = getIndex(value, index, bigInt);
         if (arrayElement == null) {
           continue;
         }
@@ -263,7 +258,7 @@ export function getMessagePathDataItems(
           // See if `arrayElement` has a property that we typically filter on. If so, show that.
           const name = fieldNames(arrayElement).find((key) => isTypicalFilterName(key));
           if (name) {
-            newPath = `${path}[:]{${name}==${getField(arrayElement, name)}}`;
+            newPath = `${path}[:]{${name}==${getField(arrayElement, name, bigInt)}}`;
           } else {
             // Use `i` here instead of `index`, since it's only different when `i` is negative,
             // and in that case it's probably more useful to show to the user how many elements
@@ -303,35 +298,32 @@ export const useDecodeMessagePathsForMessagesByTopic = (paths: string[]) => {
   const cachedGetMessagePathDataItems = useCachedGetMessagePathDataItems(memoizedPaths);
   // Note: Let callers define their own memoization scheme for messagesByTopic. For regular playback
   // useMemo might be appropriate, but weakMemo will likely better for blocks.
-  return useCallback(
-    (messagesByTopic: $ReadOnly<{ [topicName: string]: $ReadOnlyArray<ReflectiveMessage> }>) => {
-      const obj = {};
-      for (const path of memoizedPaths) {
-        // Create an array for invalid paths, and valid paths with entries in messagesByTopic
-        const rosPath = parseRosPath(path);
-        if (!rosPath) {
-          obj[path] = [];
-          continue;
-        }
-        if (!messagesByTopic[rosPath.topicName]) {
-          // For the playback pipeline messagesByTopic will always include an entry for every topic.
-          // For the blocks, missing entries are semantically interesting, and should result in
-          // missing (not empty) entries in the output so that information is communicated
-          // downstream.
-          continue;
-        }
+  return useCallback((messagesByTopic: $ReadOnly<{ [topicName: string]: $ReadOnlyArray<ReflectiveMessage> }>) => {
+    const obj = {};
+    for (const path of memoizedPaths) {
+      // Create an array for invalid paths, and valid paths with entries in messagesByTopic
+      const rosPath = parseRosPath(path);
+      if (!rosPath) {
         obj[path] = [];
+        continue;
+      }
+      if (!messagesByTopic[rosPath.topicName]) {
+        // For the playback pipeline messagesByTopic will always include an entry for every topic.
+        // For the blocks, missing entries are semantically interesting, and should result in
+        // missing (not empty) entries in the output so that information is communicated
+        // downstream.
+        continue;
+      }
+      obj[path] = [];
 
-        for (const message of messagesByTopic[rosPath.topicName]) {
-          // Add the item (if it exists) to the array.
-          const queriedData = cachedGetMessagePathDataItems(path, message);
-          if (queriedData) {
-            obj[path].push({ message, queriedData });
-          }
+      for (const message of messagesByTopic[rosPath.topicName]) {
+        // Add the item (if it exists) to the array.
+        const queriedData = cachedGetMessagePathDataItems(path, message);
+        if (queriedData) {
+          obj[path].push({ message, queriedData });
         }
       }
-      return obj;
-    },
-    [memoizedPaths, cachedGetMessagePathDataItems]
-  );
+    }
+    return obj;
+  }, [memoizedPaths, cachedGetMessagePathDataItems]);
 };

@@ -14,9 +14,9 @@ import { addPanel, type AddPanelPayload } from "webviz-core/src/actions/panels";
 import ChildToggle from "webviz-core/src/components/ChildToggle";
 import { WrappedIcon } from "webviz-core/src/components/Icon";
 import Menu from "webviz-core/src/components/Menu";
-import { getGlobalHooks } from "webviz-core/src/loadWebviz";
 import PanelList, { type PanelSelection } from "webviz-core/src/panels/PanelList";
 import type { State as ReduxState } from "webviz-core/src/reducers";
+import { getEventInfos, logEventAction, getEventTags } from "webviz-core/src/util/logEvent";
 
 type Props = {|
   defaultIsOpen?: boolean, // just for testing
@@ -28,14 +28,10 @@ function AppMenu(props: Props) {
   const dispatch = useDispatch();
 
   const layout = useSelector((state: ReduxState) => state.persistedState.panels.layout);
-  const onPanelSelect = useCallback(
-    ({ type, config, relatedConfigs }: PanelSelection) => {
-      dispatch(addPanel(({ type, layout, config, relatedConfigs, tabId: null }: AddPanelPayload)));
-      const { logger, eventNames, eventTags } = getGlobalHooks().getEventLogger();
-      logger({ name: eventNames.PANEL_ADD, tags: { [eventTags.PANEL_TYPE]: type } });
-    },
-    [dispatch, layout]
-  );
+  const onPanelSelect = useCallback(({ type, config, relatedConfigs }: PanelSelection) => {
+    dispatch(addPanel(({ type, layout, config, relatedConfigs, tabId: null }: AddPanelPayload)));
+    logEventAction(getEventInfos().PANEL_ADD, { [getEventTags().PANEL_TYPE]: type });
+  }, [dispatch, layout]);
 
   return (
     <ChildToggle position="below" onToggle={onToggle} isOpen={isOpen}>

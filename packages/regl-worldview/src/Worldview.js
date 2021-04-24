@@ -62,6 +62,10 @@ export type BaseProps = {|
   // Used to scale the canvas resolution and provide a higher image quality
   resolutionScale?: number,
   ...Dimensions,
+
+  // Context attributes passed into canvas.getContext.
+  contextAttributes?: ?{ [string]: any },
+  canvas?: HTMLCanvasElement,
 |};
 
 type State = {|
@@ -112,7 +116,11 @@ export class WorldviewBase extends React.Component<BaseProps, State> {
       defaultCameraState,
       hitmapOnMouseMove,
       disableHitmapForEvents,
+      canvas,
     } = props;
+    if (canvas) {
+      this._canvas.current = canvas;
+    }
     if (onCameraStateChange) {
       if (!cameraState) {
         console.warn(
@@ -149,6 +157,7 @@ export class WorldviewBase extends React.Component<BaseProps, State> {
         // DEFAULT_CAMERA_STATE is applied if both `cameraState` and `defaultCameraState` are not present
         cameraState: props.cameraState || props.defaultCameraState || DEFAULT_CAMERA_STATE,
         onCameraStateChange: props.onCameraStateChange || undefined,
+        contextAttributes: props.contextAttributes || {},
       }),
     };
   }
@@ -193,41 +202,61 @@ export class WorldviewBase extends React.Component<BaseProps, State> {
     }
   }
 
-  _onDoubleClick = (e: SyntheticMouseEvent<HTMLCanvasElement>) => {
-    this._onMouseInteraction(e, "onDoubleClick");
+  handleOffscreenMouseEvent = (e: SyntheticMouseEvent<HTMLCanvasElement>, mouseEventName: MouseEventEnum) => {
+    if (mouseEventName === "onDoubleClick") {
+      this._onDoubleClick(e, true);
+    } else if (mouseEventName === "onMouseDown") {
+      this._onMouseDown(e, true);
+    } else if (mouseEventName === "onMouseMove") {
+      this._onMouseMove(e, true);
+    } else if (mouseEventName === "onMouseUp") {
+      this._onMouseUp(e, true);
+    }
   };
 
-  _onMouseDown = (e: SyntheticMouseEvent<HTMLCanvasElement>) => {
+  _onDoubleClick = (e: SyntheticMouseEvent<HTMLCanvasElement>, fromOffscreenTarget: boolean) => {
+    this._onMouseInteraction(e, "onDoubleClick", fromOffscreenTarget);
+  };
+
+  _onMouseDown = (e: SyntheticMouseEvent<HTMLCanvasElement>, fromOffscreenTarget: boolean) => {
     this._dragStartPos = { x: e.clientX, y: e.clientY };
-    this._onMouseInteraction(e, "onMouseDown");
+    this._onMouseInteraction(e, "onMouseDown", fromOffscreenTarget);
   };
 
-  _onMouseMove = (e: SyntheticMouseEvent<HTMLCanvasElement>) => {
-    this._onMouseInteraction(e, "onMouseMove");
+  _onMouseMove = (e: SyntheticMouseEvent<HTMLCanvasElement>, fromOffscreenTarget: boolean) => {
+    this._onMouseInteraction(e, "onMouseMove", fromOffscreenTarget);
   };
 
-  _onMouseUp = (e: SyntheticMouseEvent<HTMLCanvasElement>) => {
-    this._onMouseInteraction(e, "onMouseUp");
+  _onMouseUp = (e: SyntheticMouseEvent<HTMLCanvasElement>, fromOffscreenTarget: boolean) => {
+    this._onMouseInteraction(e, "onMouseUp", fromOffscreenTarget);
     const { _dragStartPos } = this;
     if (_dragStartPos) {
       const deltaX = e.clientX - _dragStartPos.x;
       const deltaY = e.clientY - _dragStartPos.y;
       const distance = Math.sqrt(deltaX * deltaX + deltaY * deltaY);
       if (distance < DEFAULT_MOUSE_CLICK_RADIUS) {
-        this._onMouseInteraction(e, "onClick");
+        this._onMouseInteraction(e, "onClick", fromOffscreenTarget);
       }
       this._dragStartPos = null;
     }
   };
 
-  _onMouseInteraction = (e: SyntheticMouseEvent<HTMLCanvasElement>, mouseEventName: MouseEventEnum) => {
+  _onMouseInteraction = (
+    e: SyntheticMouseEvent<HTMLCanvasElement>,
+    mouseEventName: MouseEventEnum,
+    fromOffscreenTarget: boolean
+  ) => {
     const { worldviewContext } = this.state;
     const worldviewHandler = this.props[mouseEventName];
 
-    if (!(e.target instanceof window.HTMLElement) || e.button !== 0) {
+    // When working with offscreen canvases, window is not defined and the target
+    // might not be a valid HTMLElement. If so, we can asume any event coming
+    // from an offscreen canvas already has a relevant target.
+    if (!fromOffscreenTarget && (!(e.target instanceof window.HTMLElement) || e.button !== 0)) {
       return;
     }
 
+    // $FlowFixMe: Because of `fromOffscreenTarget`, target might not be an actual HTMLElement instance but still needs to implement `getBoundingClientRect`
     const { top: clientTop, left: clientLeft } = e.target.getBoundingClientRect();
     const { clientX, clientY } = e;
 
@@ -328,13 +357,14 @@ export class WorldviewBase extends React.Component<BaseProps, State> {
       cameraState,
       onCameraStateChange,
       resolutionScale,
+      canvas,
     } = this.props;
     const { worldviewContext } = this.state;
     // If we are supplied controlled camera state and no onCameraStateChange callback
     // then there is a 'fixed' camera from outside of worldview itself.
     const isFixedCamera = cameraState && !onCameraStateChange;
     const canvasScale = resolutionScale || 1;
-    const canvasHtml = (
+    const canvasHtml = canvas ? null : (
       <React.Fragment>
         <canvas
           style={{ width, height, maxWidth: "100%", maxHeight: "100%" }}

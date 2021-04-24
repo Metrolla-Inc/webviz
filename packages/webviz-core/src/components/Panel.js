@@ -31,17 +31,14 @@ import { useSelector, useDispatch } from "react-redux";
 import { bindActionCreators } from "redux";
 
 import styles from "./Panel.module.scss";
-import {
-  addSelectedPanelId,
-  removeSelectedPanelId,
-  setSelectedPanelIds,
-  selectAllPanelIds,
-} from "webviz-core/src/actions/mosaic";
+import { addSelectedPanelId, removeSelectedPanelId, setSelectedPanelIds } from "webviz-core/src/actions/mosaic";
 import {
   savePanelConfigs,
   saveFullPanelConfig,
   changePanelLayout,
   createTabPanel,
+  setFullScreenPanel,
+  clearFullScreenPanel,
 } from "webviz-core/src/actions/panels";
 import Button from "webviz-core/src/components/Button";
 import ErrorBoundary from "webviz-core/src/components/ErrorBoundary";
@@ -51,7 +48,7 @@ import Icon from "webviz-core/src/components/Icon";
 import KeyListener from "webviz-core/src/components/KeyListener";
 import PanelContext from "webviz-core/src/components/PanelContext";
 import MosaicDragHandle from "webviz-core/src/components/PanelToolbar/MosaicDragHandle";
-import { getGlobalHooks } from "webviz-core/src/loadWebviz";
+import { type ShortcutConfig } from "webviz-core/src/components/ShortcutsModal";
 import * as PanelAPI from "webviz-core/src/PanelAPI";
 import PanelList, { getPanelsByType } from "webviz-core/src/panels/PanelList";
 import type { Topic } from "webviz-core/src/players/types";
@@ -74,6 +71,7 @@ import {
   isTabPanel,
   updateTabPanelLayout,
 } from "webviz-core/src/util/layout";
+import { getEventTags, getEventInfos, logEventAction } from "webviz-core/src/util/logEvent";
 import { colors } from "webviz-core/src/util/sharedStyleConstants";
 
 type Props<Config> = { childId?: string, config?: Config, saveConfig?: (Config) => void, tabId?: string };
@@ -84,13 +82,17 @@ type ActionProps = {|
   addSelectedPanelId: (panelId: string) => void,
   removeSelectedPanelId: (panelId: string) => void,
   setSelectedPanelIds: (panelIds: string[]) => void,
-  selectAllPanelIds: () => void,
   createTabPanel: (CreateTabPanelPayload) => void,
+  setFullScreenPanel: (panelId: string, locked: boolean) => void,
+  clearFullScreenPanel: (panelId: string) => void,
 |};
+
 interface PanelStatics<Config> {
   panelType: string;
   defaultConfig: Config;
+  shortcuts?: ShortcutConfig[];
 }
+export type PanelComponentType<T> = ComponentType<Props<T>> & PanelStatics<T>;
 
 const EMPTY_CONFIG = Object.freeze({});
 
@@ -147,8 +149,9 @@ export default function Panel<Config: PanelConfig>(
             addSelectedPanelId,
             removeSelectedPanelId,
             setSelectedPanelIds,
-            selectAllPanelIds,
             createTabPanel,
+            setFullScreenPanel,
+            clearFullScreenPanel,
           },
           dispatch
         ),
@@ -157,10 +160,10 @@ export default function Panel<Config: PanelConfig>(
 
     const [quickActionsKeyPressed, setQuickActionsKeyPressed] = useState(false);
     const [shiftKeyPressed, setShiftKeyPressed] = useState(false);
-    const [cmdKeyPressed, setCmdKeyPressed] = useState(false);
-    const [fullScreen, setFullScreen] = useState(false);
+    const fullScreen =
+      useSelector((state) => state.persistedState.panels.fullScreenPanel?.panelId) === childId && childId != null;
+    const fullScreenLocked = useSelector((state) => state.persistedState.panels.fullScreenPanel?.locked) && fullScreen;
     const [isHovered, setIsHovered] = useState(false);
-    const [fullScreenLocked, setFullScreenLocked] = useState(false);
 
     const panelsByType = useMemo(() => getPanelsByType(), []);
     const type = PanelComponent.panelType;
@@ -168,156 +171,138 @@ export default function Panel<Config: PanelConfig>(
     const panelComponentConfig = useMemo(() => ({ ...PanelComponent.defaultConfig, ...config }), [config]);
 
     // Mix partial config with current config or `defaultConfig`
-    const saveCompleteConfig = useCallback(
-      (configToSave: $Shape<Config>, options: ?{ historyOptions?: EditHistoryOptions }) => {
-        if (saveConfig) {
-          saveConfig(configToSave);
-        }
-        if (childId) {
-          actions.savePanelConfigs({
-            configs: [{ id: childId, config: configToSave, defaultConfig: PanelComponent.defaultConfig }],
-            historyOptions: options?.historyOptions,
-          });
-        }
-      },
-      [actions, childId, saveConfig]
-    );
+    const saveCompleteConfig = useCallback((
+      configToSave: $Shape<Config>,
+      options: ?{ historyOptions?: EditHistoryOptions }
+    ) => {
+      if (saveConfig) {
+        saveConfig(configToSave);
+      }
+      if (childId) {
+        actions.savePanelConfigs({
+          configs: [{ id: childId, config: configToSave, defaultConfig: PanelComponent.defaultConfig }],
+          historyOptions: options?.historyOptions,
+        });
+      }
+    }, [actions, childId, saveConfig]);
 
-    const updatePanelConfig = useCallback(
-      (panelType: string, perPanelFunc: (PanelConfig) => PanelConfig, historyOptions?: EditHistoryOptions) => {
-        actions.saveFullPanelConfig({ panelType, perPanelFunc, historyOptions });
-      },
-      [actions]
-    );
+    const updatePanelConfig = useCallback((
+      panelType: string,
+      perPanelFunc: (PanelConfig) => PanelConfig,
+      historyOptions?: EditHistoryOptions
+    ) => {
+      actions.saveFullPanelConfig({ panelType, perPanelFunc, historyOptions });
+    }, [actions]);
 
     // Open a panel next to the current panel, of the specified `panelType`.
     // If such a panel already exists, we update it with the new props.
-    const openSiblingPanel = useCallback(
-      (panelType: string, siblingConfigCreator: (PanelConfig) => PanelConfig) => {
-        const siblingComponent = PanelList.getComponentForType(panelType);
-        if (!siblingComponent) {
-          return;
-        }
-        const siblingDefaultConfig = siblingComponent.defaultConfig;
-        const ownPath = mosaicWindowActions.getPath();
+    const openSiblingPanel = useCallback((panelType: string, siblingConfigCreator: (PanelConfig) => PanelConfig) => {
+      const siblingComponent = PanelList.getComponentForType(panelType);
+      if (!siblingComponent) {
+        return;
+      }
+      const siblingDefaultConfig = siblingComponent.defaultConfig;
+      const ownPath = mosaicWindowActions.getPath();
 
-        // Try to find a sibling summary panel and update it with the `siblingConfig`
-        const siblingPathEnd = last(ownPath) ? getOtherBranch(last(ownPath)) : "second";
-        const siblingPath = ownPath.slice(0, -1).concat(siblingPathEnd);
-        const siblingId = getNodeAtPath(mosaicActions.getRoot(), siblingPath);
-        if (typeof siblingId === "string" && getPanelTypeFromId(siblingId) === panelType) {
-          const siblingConfig: PanelConfig = { ...siblingDefaultConfig, ...stableSavedProps.current[siblingId] };
-          actions.savePanelConfigs({
-            configs: [
-              { id: siblingId, config: siblingConfigCreator(siblingConfig), defaultConfig: siblingDefaultConfig },
-            ],
-          });
-          return;
-        }
-
-        // Otherwise, open new panel
-        const newPanelPath = ownPath.concat("second");
-        mosaicWindowActions.split({ type: panelType }).then(() => {
-          const newPanelId = getNodeAtPath(mosaicActions.getRoot(), newPanelPath);
-          actions.savePanelConfigs({
-            configs: [
-              {
-                id: newPanelId,
-                config: siblingConfigCreator(siblingDefaultConfig),
-                defaultConfig: siblingDefaultConfig,
-              },
-            ],
-          });
+      // Try to find a sibling summary panel and update it with the `siblingConfig`
+      const siblingPathEnd = last(ownPath) ? getOtherBranch(last(ownPath)) : "second";
+      const siblingPath = ownPath.slice(0, -1).concat(siblingPathEnd);
+      const siblingId = getNodeAtPath(mosaicActions.getRoot(), siblingPath);
+      if (typeof siblingId === "string" && getPanelTypeFromId(siblingId) === panelType) {
+        const siblingConfig: PanelConfig = { ...siblingDefaultConfig, ...stableSavedProps.current[siblingId] };
+        actions.savePanelConfigs({
+          configs: [
+            { id: siblingId, config: siblingConfigCreator(siblingConfig), defaultConfig: siblingDefaultConfig },
+          ],
         });
-      },
-      [actions, mosaicActions, mosaicWindowActions]
-    );
+        return;
+      }
 
-    const selectPanel = useCallback(
-      (panelId: string, toggleSelection: boolean) => {
-        const panelIdsToDeselect = [];
-
-        // If we selected a Tab panel, deselect its children
-        const savedConfig = savedProps[panelId];
-        if (isTabPanel(panelId) && savedConfig) {
-          const { activeTabIdx, tabs } = (savedConfig: TabPanelConfig);
-          const activeTabLayout = tabs[activeTabIdx]?.layout;
-          if (activeTabLayout) {
-            const childrenPanelIds = getAllPanelIds(activeTabLayout, savedProps);
-            panelIdsToDeselect.push(...childrenPanelIds);
-          }
-        }
-
-        // If we selected a child, deselect all parent Tab panels
-        const parentTabPanelByPanelId = getParentTabPanelByPanelId(savedProps);
-        let nextParentId = tabId;
-        const parentTabPanelIds = [];
-        while (nextParentId) {
-          parentTabPanelIds.push(nextParentId);
-          nextParentId = parentTabPanelByPanelId[nextParentId];
-        }
-        panelIdsToDeselect.push(...parentTabPanelIds);
-
-        const nextSelectedPanelIds = toggleSelection ? xor(selectedPanelIds, [panelId]) : [panelId];
-        const nextValidSelectedPanelIds = without(nextSelectedPanelIds, ...panelIdsToDeselect);
-        actions.setSelectedPanelIds(nextValidSelectedPanelIds);
-
-        // Deselect any text that was selected due to holding the shift key while clicking
-        if (nextValidSelectedPanelIds.length >= 2) {
-          window.getSelection().removeAllRanges();
-        }
-      },
-      [actions, savedProps, selectedPanelIds, tabId]
-    );
-
-    const onOverlayClick = useCallback(
-      (e) => {
-        if (!fullScreen && quickActionsKeyPressed) {
-          setFullScreen(true);
-          if (shiftKeyPressed) {
-            setFullScreenLocked(true);
-          }
-          return;
-        }
-
-        if (childId) {
-          e.stopPropagation();
-          const toggleSelection = e.metaKey || shiftKeyPressed;
-          selectPanel(childId, toggleSelection);
-        }
-      },
-      [childId, fullScreen, quickActionsKeyPressed, selectPanel, shiftKeyPressed]
-    );
-
-    const groupPanels = useCallback(
-      () => {
-        actions.createTabPanel({
-          idToReplace: childId,
-          layout,
-          idsToRemove: selectedPanelIds,
-          singleTab: true,
+      // Otherwise, open new panel
+      const newPanelPath = ownPath.concat("second");
+      mosaicWindowActions.split({ type: panelType }).then(() => {
+        const newPanelId = getNodeAtPath(mosaicActions.getRoot(), newPanelPath);
+        actions.savePanelConfigs({
+          configs: [
+            {
+              id: newPanelId,
+              config: siblingConfigCreator(siblingDefaultConfig),
+              defaultConfig: siblingDefaultConfig,
+            },
+          ],
         });
-      },
-      [actions, childId, layout, selectedPanelIds]
-    );
+      });
+    }, [actions, mosaicActions, mosaicWindowActions]);
 
-    const createTabs = useCallback(
-      () => {
-        actions.createTabPanel({
-          idToReplace: childId,
-          layout,
-          idsToRemove: selectedPanelIds,
-          singleTab: false,
-        });
-      },
-      [actions, childId, layout, selectedPanelIds]
-    );
+    const selectPanel = useCallback((panelId: string, toggleSelection: boolean) => {
+      const panelIdsToDeselect = [];
+
+      // If we selected a Tab panel, deselect its children
+      const savedConfig = savedProps[panelId];
+      if (isTabPanel(panelId) && savedConfig) {
+        const { activeTabIdx, tabs } = (savedConfig: TabPanelConfig);
+        const activeTabLayout = tabs[activeTabIdx]?.layout;
+        if (activeTabLayout) {
+          const childrenPanelIds = getAllPanelIds(activeTabLayout, savedProps);
+          panelIdsToDeselect.push(...childrenPanelIds);
+        }
+      }
+
+      // If we selected a child, deselect all parent Tab panels
+      const parentTabPanelByPanelId = getParentTabPanelByPanelId(savedProps);
+      let nextParentId = tabId;
+      const parentTabPanelIds = [];
+      while (nextParentId) {
+        parentTabPanelIds.push(nextParentId);
+        nextParentId = parentTabPanelByPanelId[nextParentId];
+      }
+      panelIdsToDeselect.push(...parentTabPanelIds);
+
+      const nextSelectedPanelIds = toggleSelection ? xor(selectedPanelIds, [panelId]) : [panelId];
+      const nextValidSelectedPanelIds = without(nextSelectedPanelIds, ...panelIdsToDeselect);
+      actions.setSelectedPanelIds(nextValidSelectedPanelIds);
+
+      // Deselect any text that was selected due to holding the shift key while clicking
+      if (nextValidSelectedPanelIds.length >= 2) {
+        window.getSelection().removeAllRanges();
+      }
+    }, [actions, savedProps, selectedPanelIds, tabId]);
+
+    const onOverlayClick = useCallback((e) => {
+      if (!fullScreen && quickActionsKeyPressed && childId != null) {
+        actions.setFullScreenPanel(childId, shiftKeyPressed);
+        return;
+      }
+
+      if (childId) {
+        e.stopPropagation();
+        const toggleSelection = e.metaKey || shiftKeyPressed;
+        selectPanel(childId, toggleSelection);
+      }
+    }, [actions, childId, fullScreen, quickActionsKeyPressed, selectPanel, shiftKeyPressed]);
+
+    const groupPanels = useCallback(() => {
+      actions.createTabPanel({
+        idToReplace: childId,
+        layout,
+        idsToRemove: selectedPanelIds,
+        singleTab: true,
+      });
+    }, [actions, childId, layout, selectedPanelIds]);
+
+    const createTabs = useCallback(() => {
+      actions.createTabPanel({
+        idToReplace: childId,
+        layout,
+        idsToRemove: selectedPanelIds,
+        singleTab: false,
+      });
+    }, [actions, childId, layout, selectedPanelIds]);
 
     const { closePanel, splitPanel } = useMemo(
       () => ({
         closePanel: () => {
-          const { logger, eventNames, eventTags } = getGlobalHooks().getEventLogger();
-          logger({ name: eventNames.PANEL_REMOVE, tags: { [eventTags.PANEL_TYPE]: type } });
+          logEventAction(getEventInfos().PANEL_REMOVE, { [getEventTags().PANEL_TYPE]: type });
           mosaicActions.remove(mosaicWindowActions.getPath());
         },
         splitPanel: () => {
@@ -333,43 +318,36 @@ export default function Panel<Config: PanelConfig>(
           } else {
             mosaicWindowActions.split({ type: PanelComponent.panelType });
           }
-          const { logger, eventNames, eventTags } = getGlobalHooks().getEventLogger();
-          logger({ name: eventNames.PANEL_SPLIT, tags: { [eventTags.PANEL_TYPE]: type } });
+          logEventAction(getEventInfos().PANEL_SPLIT, { [getEventTags().PANEL_TYPE]: type });
         },
       }),
       [actions, childId, config, mosaicActions, mosaicWindowActions, savedProps, tabId, type]
     );
 
-    const { onMouseEnter, onMouseLeave, onMouseMove, enterFullscreen, exitFullScreen } = useMemo(
+    const { onMouseEnter, onMouseLeave, enterFullScreen, exitFullScreen } = useMemo(
       () => ({
         onMouseEnter: () => setIsHovered(true),
         onMouseLeave: () => setIsHovered(false),
-        onMouseMove: (e) => {
-          if (e.metaKey !== cmdKeyPressed) {
-            setCmdKeyPressed(e.metaKey);
+        enterFullScreen: () => {
+          if (childId != null) {
+            actions.setFullScreenPanel(childId, true);
           }
         },
-        enterFullscreen: () => {
-          setFullScreen(true);
-          setFullScreenLocked(true);
-        },
         exitFullScreen: () => {
-          setFullScreen(false);
-          setFullScreenLocked(false);
+          if (childId != null) {
+            actions.clearFullScreenPanel(childId);
+          }
         },
       }),
-      [cmdKeyPressed]
+      [actions, childId]
     );
 
-    const onReleaseQuickActionsKey = useCallback(
-      () => {
-        setQuickActionsKeyPressed(false);
-        if (fullScreen && !fullScreenLocked) {
-          exitFullScreen();
-        }
-      },
-      [exitFullScreen, fullScreen, fullScreenLocked]
-    );
+    const onReleaseQuickActionsKey = useCallback(() => {
+      setQuickActionsKeyPressed(false);
+      if (fullScreen && !fullScreenLocked) {
+        exitFullScreen();
+      }
+    }, [exitFullScreen, fullScreen, fullScreenLocked]);
 
     const { keyUpHandlers, keyDownHandlers } = useMemo(
       () => ({
@@ -377,34 +355,21 @@ export default function Panel<Config: PanelConfig>(
           "`": () => onReleaseQuickActionsKey(),
           "~": () => onReleaseQuickActionsKey(),
           Shift: () => setShiftKeyPressed(false),
-          Meta: () => setCmdKeyPressed(false),
         },
         keyDownHandlers: {
-          a: (e) => {
-            e.preventDefault();
-            if (cmdKeyPressed) {
-              actions.selectAllPanelIds();
-            }
-          },
           "`": () => setQuickActionsKeyPressed(true),
           "~": () => setQuickActionsKeyPressed(true),
           Shift: () => setShiftKeyPressed(true),
           Escape: () => exitFullScreen(),
-          Meta: () => setCmdKeyPressed(true),
         },
       }),
-      [actions, cmdKeyPressed, exitFullScreen, onReleaseQuickActionsKey]
-    );
-
-    const onBlurDocument = useCallback(
-      () => {
-        exitFullScreen();
-        setCmdKeyPressed(false);
-        setShiftKeyPressed(false);
-        onReleaseQuickActionsKey();
-      },
       [exitFullScreen, onReleaseQuickActionsKey]
     );
+
+    const onBlurDocument = useCallback(() => {
+      setShiftKeyPressed(false);
+      onReleaseQuickActionsKey();
+    }, [onReleaseQuickActionsKey]);
 
     const child = useMemo(
       () => (
@@ -433,7 +398,7 @@ export default function Panel<Config: PanelConfig>(
           saveConfig: saveCompleteConfig,
           updatePanelConfig,
           openSiblingPanel,
-          enterFullscreen,
+          enterFullScreen,
           isHovered,
           isFocused,
           tabId,
@@ -445,7 +410,6 @@ export default function Panel<Config: PanelConfig>(
           onClick={onOverlayClick}
           onMouseEnter={onMouseEnter}
           onMouseLeave={onMouseLeave}
-          onMouseMove={onMouseMove}
           className={cx({
             [styles.root]: true,
             [styles.rootFullScreen]: fullScreen,
@@ -509,6 +473,7 @@ export default function Panel<Config: PanelConfig>(
   // $FlowFixMe - doesn't know underlying memoized PanelComponent's interface
   return Object.assign(React.memo(ConnectedPanel), {
     defaultConfig: PanelComponent.defaultConfig,
+    shortcuts: PanelComponent.shortcuts,
     panelType: PanelComponent.panelType,
   });
 }

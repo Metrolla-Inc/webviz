@@ -23,10 +23,10 @@ import { WrappedIcon } from "webviz-core/src/components/Icon";
 import Menu from "webviz-core/src/components/Menu";
 import HelpButton from "webviz-core/src/components/PanelToolbar/HelpButton";
 import useGlobalVariables from "webviz-core/src/hooks/useGlobalVariables";
-import { getGlobalHooks } from "webviz-core/src/loadWebviz";
 import GlobalVariables from "webviz-core/src/panels/GlobalVariables";
 import helpContent from "webviz-core/src/panels/GlobalVariables/index.help.md";
 import inScreenshotTests from "webviz-core/src/stories/inScreenshotTests";
+import { getEventTags, getEventInfos, logEventAction } from "webviz-core/src/util/logEvent";
 import { colors } from "webviz-core/src/util/sharedStyleConstants";
 
 const STitleBar = styled.div`
@@ -88,29 +88,22 @@ function GlobalVariablesMenu(props: Props) {
 
   const dispatch = useDispatch();
   const layout = useSelector((state) => state.persistedState.panels.layout);
-  const addPanelToLayout = useCallback(
-    () => {
-      setIsOpen((open) => !open);
-      dispatch(addPanel(({ type: GlobalVariables.panelType, layout, tabId: null }: AddPanelPayload)));
+  const addPanelToLayout = useCallback(() => {
+    setIsOpen((open) => !open);
+    dispatch(addPanel(({ type: GlobalVariables.panelType, layout, tabId: null }: AddPanelPayload)));
 
-      const { logger, eventNames, eventTags } = getGlobalHooks().getEventLogger();
-      logger({ name: eventNames.PANEL_ADD, tags: { [eventTags.PANEL_TYPE]: GlobalVariables.panelType } });
-    },
-    [dispatch, layout]
-  );
+    logEventAction(getEventInfos().PANEL_ADD, { [getEventTags().PANEL_TYPE]: GlobalVariables.panelType });
+  }, [dispatch, layout]);
 
   const { globalVariables } = useGlobalVariables();
-  useEffect(
-    () => {
-      setHasChangedVariable(!skipAnimation && !isActiveElementEditable());
-      const timerId = setTimeout(() => setHasChangedVariable(false), ANIMATION_RESET_DELAY_MS);
-      return () => clearTimeout(timerId);
-    },
-    [globalVariables, skipAnimation]
-  );
+  useEffect(() => {
+    setHasChangedVariable(!skipAnimation && !isActiveElementEditable());
+    const timerId = setTimeout(() => setHasChangedVariable(false), ANIMATION_RESET_DELAY_MS);
+    return () => clearTimeout(timerId);
+  }, [globalVariables, skipAnimation]);
 
   return (
-    <ChildToggle position="below" onToggle={onToggle} isOpen={isOpen}>
+    <ChildToggle position="below" onToggle={onToggle} isOpen={isOpen} dataTest="open-global-variables">
       <Flex center>
         <SAnimatedIcon
           medium

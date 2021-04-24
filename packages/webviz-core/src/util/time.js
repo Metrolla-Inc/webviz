@@ -7,18 +7,21 @@
 //  You may not use this file except in compliance with the License.
 
 // No time functions that require `moment` should live in this file.
+import { padStart } from "lodash";
 import { type Time, TimeUtil } from "rosbag";
 
 import { MIN_MEM_CACHE_BLOCK_SIZE_NS } from "webviz-core/src/dataProviders/MemoryCacheDataProvider";
 import { cast, type Bobject, type Message } from "webviz-core/src/players/types";
 import type { BinaryTime } from "webviz-core/src/types/BinaryMessages";
 import { deepParse } from "webviz-core/src/util/binaryObjects";
+import { parseTimeStr } from "webviz-core/src/util/formatTime";
 import {
   SEEK_TO_FRACTION_QUERY_KEY,
   SEEK_TO_RELATIVE_MS_QUERY_KEY,
-  SEEK_TO_UNIX_MS_QUERY_KEY,
+  SEEK_TO_QUERY_KEY,
 } from "webviz-core/src/util/globalConstants";
 
+export const DEFAULT_ZERO_TIME = { sec: 0, nsec: 0 };
 type BatchTimestamp = {
   seconds: number,
   nanoseconds: number,
@@ -114,7 +117,7 @@ export function toMicroSec({ sec, nsec }: Time) {
 }
 
 // WARNING! Imprecise float; see above.
-export function toSec({ sec, nsec }: Time) {
+export function toSec({ sec, nsec }: Time): number {
   return sec + nsec * 1e-9;
 }
 
@@ -227,6 +230,13 @@ export function clampTime(time: Time, start: Time, end: Time): Time {
   return time;
 }
 
+export const isTimeInRangeInclusive = (time: Time, start: Time, end: Time) => {
+  if (TimeUtil.compare(start, time) > 0 || TimeUtil.compare(end, time) < 0) {
+    return false;
+  }
+  return true;
+};
+
 export function parseRosTimeStr(str: string): ?Time {
   if (/^\d+\.?$/.test(str)) {
     // Whole number with optional "." at the end.
@@ -234,18 +244,23 @@ export function parseRosTimeStr(str: string): ?Time {
   }
   if (!/^\d+\.\d+$/.test(str)) {
     // Not digits.digits -- invalid.
-    return null;
+    return undefined;
   }
   const partials = str.split(".");
   if (partials.length === 0) {
-    return null;
+    return undefined;
   }
   // There can be 9 digits of nanoseconds. If the fractional part is "1", we need to add eight
-  // zeros. Also, make sure we round to an integer if we need to _remove_ digits.
+  // zeros. Also, make sure we round to an integer if we need to remove digits.
   const digitsShort = 9 - partials[1].length;
   const nsec = Math.round(parseInt(partials[1], 10) * 10 ** digitsShort);
   // It's possible we rounded to { sec: 1, nsec: 1e9 }, which is invalid, so fixTime.
   return fixTime({ sec: parseInt(partials[0], 10) || 0, nsec });
+}
+
+export function rosTimeToUrlTime(time: Time): string {
+  const nsec = padStart(`${time.nsec}`, 9, "0");
+  return `${time.sec}.${nsec}`;
 }
 
 // Functions and types for specifying and applying player initial seek time intentions.
@@ -270,21 +285,34 @@ if (SEEK_ON_START_NS >= MIN_MEM_CACHE_BLOCK_SIZE_NS) {
   );
 }
 
-export function getSeekToTime(): SeekToTimeSpec {
-  const params = new URLSearchParams(window.location.search);
-  const absoluteSeek = params.get(SEEK_TO_UNIX_MS_QUERY_KEY);
+export function getSeekToTime(search: ?string): SeekToTimeSpec {
+  const params = new URLSearchParams(search || window.location.search);
+  const absoluteSeek = params.get(SEEK_TO_QUERY_KEY);
+  const defaultResult = { type: "relative", startOffset: fromNanoSec(SEEK_ON_START_NS) };
   if (absoluteSeek != null) {
-    return { type: "absolute", time: fromMillis(parseInt(absoluteSeek)) };
+    if (!absoluteSeek.includes(".")) {
+      const absoluteSeekVal = parseInt(absoluteSeek);
+      return isNaN(absoluteSeek) || absoluteSeekVal < 0
+        ? defaultResult
+        : { type: "absolute", time: fromMillis(absoluteSeekVal) };
+    }
+    const seekToRosTime = parseRosTimeStr(absoluteSeek);
+    return seekToRosTime ? { type: "absolute", time: seekToRosTime } : defaultResult;
   }
+
   const relativeSeek = params.get(SEEK_TO_RELATIVE_MS_QUERY_KEY);
   if (relativeSeek != null) {
-    return { type: "relative", startOffset: fromMillis(parseInt(relativeSeek)) };
+    const relativeSeekVal = parseInt(relativeSeek);
+    return isNaN(relativeSeek) || relativeSeekVal < 0
+      ? defaultResult
+      : { type: "relative", startOffset: fromMillis(relativeSeekVal) };
   }
   const seekFraction = params.get(SEEK_TO_FRACTION_QUERY_KEY);
   if (seekFraction != null) {
-    return { type: "fraction", fraction: parseFloat(seekFraction) };
+    const seekFractionVal = parseFloat(seekFraction);
+    return isNaN(seekFraction) || seekFractionVal < 0 ? defaultResult : { type: "fraction", fraction: seekFractionVal };
   }
-  return { type: "relative", startOffset: fromNanoSec(SEEK_ON_START_NS) };
+  return defaultResult;
 }
 
 export function getSeekTimeFromSpec(spec: SeekToTimeSpec, start: Time, end: Time): Time {
@@ -326,4 +354,30 @@ export const maybeGetBobjectHeaderStamp = (message: ?Bobject): ?Time => {
   if (isTime(stamp)) {
     return stamp;
   }
+};
+
+const todTimeRegex = /^\d+:\d+:\d+.\d+\s[PpAa][Mm]\s[A-Za-z$]+/;
+export const getValidatedTimeAndMethodFromString = ({
+  text,
+  date,
+  timezone,
+}: {
+  text: ?string,
+  date: string,
+  timezone: ?string,
+}): ?{ time: ?Time, method: "ROS" | "TOD" } => {
+  if (!text) {
+    return;
+  }
+  const isInvalidRosTime = isNaN(text);
+  const isInvalidTodTime = !(todTimeRegex.test(text || "") && parseTimeStr(`${date} ${text || ""}`, timezone));
+
+  if (isInvalidRosTime && isInvalidTodTime) {
+    return;
+  }
+
+  return {
+    time: !isInvalidRosTime ? parseRosTimeStr(text || "") : parseTimeStr(`${date} ${text || ""}`, timezone),
+    method: isInvalidRosTime ? "TOD" : "ROS",
+  };
 };

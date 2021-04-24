@@ -12,17 +12,15 @@ import { PolygonBuilder, type MouseEventObject, type Polygon } from "regl-worldv
 
 import { getGlobalHooks } from "webviz-core/src/loadWebviz";
 import CameraInfo from "webviz-core/src/panels/ThreeDimensionalViz/CameraInfo";
-import Crosshair from "webviz-core/src/panels/ThreeDimensionalViz/Crosshair";
 import DrawingTools, { type DrawingTabType } from "webviz-core/src/panels/ThreeDimensionalViz/DrawingTools";
 import MeasuringTool, { type MeasureInfo } from "webviz-core/src/panels/ThreeDimensionalViz/DrawingTools/MeasuringTool";
 import FollowTFControl from "webviz-core/src/panels/ThreeDimensionalViz/FollowTFControl";
 import Interactions from "webviz-core/src/panels/ThreeDimensionalViz/Interactions";
 import type { TabType } from "webviz-core/src/panels/ThreeDimensionalViz/Interactions/Interactions";
+import { type LayoutToolbarSharedProps } from "webviz-core/src/panels/ThreeDimensionalViz/Layout";
 import styles from "webviz-core/src/panels/ThreeDimensionalViz/Layout.module.scss";
 import MainToolbar from "webviz-core/src/panels/ThreeDimensionalViz/MainToolbar";
-import MeasureMarker from "webviz-core/src/panels/ThreeDimensionalViz/MeasureMarker";
 import SearchText, { type SearchTextProps } from "webviz-core/src/panels/ThreeDimensionalViz/SearchText";
-import { type LayoutToolbarSharedProps } from "webviz-core/src/panels/ThreeDimensionalViz/TopicTree/Layout";
 
 type Props = {|
   ...LayoutToolbarSharedProps,
@@ -36,7 +34,6 @@ type Props = {|
   onToggleCameraMode: () => void,
   onToggleDebug: () => void,
   polygonBuilder: PolygonBuilder,
-  rootTf: ?string,
   selectedObject: ?MouseEventObject,
   selectedPolygonEditFormat: "json" | "yaml",
   setInteractionsTabType: (?TabType) => void,
@@ -64,7 +61,6 @@ function LayoutToolbar({
   onToggleCameraMode,
   onToggleDebug,
   polygonBuilder,
-  rootTf,
   saveConfig,
   searchInputRef,
   searchText,
@@ -84,17 +80,14 @@ function LayoutToolbar({
   toggleSearchTextOpen,
   transforms,
 }: Props) {
-  const additionalToolbarItemsElem = useMemo(
-    () => {
-      const AdditionalToolbarItems = getGlobalHooks().perPanelHooks().ThreeDimensionalViz.AdditionalToolbarItems;
-      return (
-        <div className={cx(styles.buttons, styles.cartographer)}>
-          <AdditionalToolbarItems transforms={transforms} />
-        </div>
-      );
-    },
-    [transforms]
-  );
+  const additionalToolbarItemsElem = useMemo(() => {
+    const AdditionalToolbarItems = getGlobalHooks().perPanelHooks().ThreeDimensionalViz.AdditionalToolbarItems;
+    return (
+      <div className={cx(styles.buttons, styles.cartographer)}>
+        <AdditionalToolbarItems transforms={transforms} />
+      </div>
+    );
+  }, [transforms]);
 
   return isHidden ? null : (
     <>
@@ -116,11 +109,6 @@ function LayoutToolbar({
             searchInputRef={searchInputRef}
             setSelectedMatchIndex={setSelectedMatchIndex}
             selectedMatchIndex={selectedMatchIndex}
-            onCameraStateChange={onCameraStateChange}
-            cameraState={cameraState}
-            transforms={transforms}
-            rootTf={rootTf}
-            onFollowChange={onFollowChange}
           />
         </div>
         <div className={styles.buttons}>
@@ -165,8 +153,6 @@ function LayoutToolbar({
         />
         {additionalToolbarItemsElem}
       </div>
-      {!cameraState.perspective && showCrosshair && <Crosshair cameraState={cameraState} />}
-      <MeasureMarker measurePoints={measureInfo.measurePoints} />
     </>
   );
 }

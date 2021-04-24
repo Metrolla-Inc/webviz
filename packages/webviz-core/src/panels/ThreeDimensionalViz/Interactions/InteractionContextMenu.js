@@ -11,9 +11,9 @@ import { type MouseEventObject } from "regl-worldview";
 import styled from "styled-components";
 
 import type { SelectedObject } from "webviz-core/src/panels/ThreeDimensionalViz/Interactions/types";
+import { type ClickedPosition } from "webviz-core/src/panels/ThreeDimensionalViz/Layout";
 import { ThreeDimensionalVizContext } from "webviz-core/src/panels/ThreeDimensionalViz/ThreeDimensionalVizContext";
 import { getInteractionData, getObject } from "webviz-core/src/panels/ThreeDimensionalViz/threeDimensionalVizUtils";
-import { type ClickedPosition } from "webviz-core/src/panels/ThreeDimensionalViz/TopicTree/Layout";
 import { colors } from "webviz-core/src/util/sharedStyleConstants";
 
 const SInteractionContextMenu = styled.div`
@@ -101,19 +101,16 @@ function InteractionContextMenuItem({
   );
 
   const { setHoveredMarkerMatchers } = useContext(ThreeDimensionalVizContext);
-  const onMouseEnter = useCallback(
-    () => {
-      if (topic) {
-        const { id, ns } = object;
-        const checks = [{ markerKeyPath: ["id"], value: id }];
-        if (ns) {
-          checks.push({ markerKeyPath: ["ns"], value: ns });
-        }
-        return setHoveredMarkerMatchers([{ topic, checks }]);
+  const onMouseEnter = useCallback(() => {
+    if (topic) {
+      const { id, ns } = object;
+      const checks = [{ markerKeyPath: ["id"], value: id }];
+      if (ns) {
+        checks.push({ markerKeyPath: ["ns"], value: ns });
       }
-    },
-    [object, setHoveredMarkerMatchers, topic]
-  );
+      return setHoveredMarkerMatchers([{ topic, checks }]);
+    }
+  }, [object, setHoveredMarkerMatchers, topic]);
   const onMouseLeave = useCallback(() => setHoveredMarkerMatchers([]), [setHoveredMarkerMatchers]);
   useEffect(() => onMouseLeave, [onMouseLeave]);
 

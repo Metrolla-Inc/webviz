@@ -16,24 +16,53 @@ const example0 = {
   xAxisLabel: "This is my X axis label",
   yAxisLabel: "This is my Y axis label",
   lines: [
-    { label: "solid-line", borderColor: "red", backgroundColor: "red", data: [{ x: 0, y: 0 }, { x: 5, y: 5 }] },
+    {
+      order: 0,
+      label: "solid-line",
+      borderDash: [],
+      borderColor: "red",
+      backgroundColor: "red",
+      pointBackgroundColor: "",
+      pointBorderColor: "",
+      pointBorderWidth: 0,
+      pointStyle: "",
+      pointRadius: 3,
+      data: [{ x: 0, y: 0 }, { x: 5, y: 5 }],
+    },
     {
       order: 1,
       label: "dashed-line",
       borderDash: [5, 5],
       borderColor: "pink",
       backgroundColor: "pink",
+      pointBackgroundColor: "",
+      pointBorderColor: "",
+      pointBorderWidth: 0,
+      pointStyle: "",
+      pointRadius: 3,
       data: [{ x: 1, y: 1.5 }, { x: 5, y: 3.5 }],
     },
   ],
   points: [
     {
+      order: 0,
       label: "circle-point",
+      borderDash: [],
+      borderColor: "",
+      backgroundColor: "",
       pointBackgroundColor: "blue",
+      pointBorderColor: "",
+      pointBorderWidth: 0,
+      pointStyle: "",
+      pointRadius: 3,
       data: [{ x: 1.5, y: 2.5 }, { x: 3, y: 4 }, { x: 4, y: 3.5 }],
     },
     {
+      order: 0,
       label: "cross-point",
+      borderDash: [],
+      borderColor: "",
+      backgroundColor: "",
       pointBackgroundColor: "teal",
       pointBorderColor: "teal",
       pointBorderWidth: 3,
@@ -45,10 +74,25 @@ const example0 = {
 };
 
 const example1 = {
+  title: "",
+  xAxisLabel: "This is my X axis label",
+  yAxisLabel: "This is my Y axis label",
   lines: [
     // This also has a solid-line, but with completely different dimensions. If we don't properly
     // clone these objects, Chart.js might mutate the object above because the label is the same.
-    { label: "solid-line", data: [{ x: 100, y: 100 }, { x: 200, y: 100 }] },
+    {
+      order: 0,
+      label: "solid-line",
+      borderDash: [],
+      borderColor: "",
+      backgroundColor: "",
+      pointBackgroundColor: "",
+      pointBorderColor: "",
+      pointBorderWidth: 0,
+      pointStyle: "",
+      pointRadius: 3,
+      data: [{ x: 100, y: 100 }, { x: 200, y: 100 }],
+    },
   ],
 };
 
@@ -73,10 +117,15 @@ const fixture = {
   },
 };
 
-function zoomOut() {
+function zoomOut(keyObj) {
   const canvasEl = document.querySelector("canvas");
+
   // Zoom is a continuous event, so we need to simulate wheel multiple times
   if (canvasEl) {
+    if (keyObj) {
+      document.dispatchEvent(new KeyboardEvent("keydown", keyObj));
+    }
+
     for (let i = 0; i < 5; i++) {
       triggerWheel(canvasEl, 1);
     }
@@ -161,11 +210,29 @@ storiesOf("<TwoDimensionalPlot>", module)
       </PanelSetup>
     );
   })
-  .add("zooms to show reset view button", () => (
+  .add("zooms horizontally to show reset view button", () => (
     <PanelSetup
       fixture={fixture}
       onMount={() => {
         setTimeout(zoomOut, 200);
+      }}>
+      <TwoDimensionalPlot config={{ path: { value: "/plot_a.versions[0]" } }} />
+    </PanelSetup>
+  ))
+  .add("zooms vertically to show reset view button", () => (
+    <PanelSetup
+      fixture={fixture}
+      onMount={() => {
+        setTimeout(() => zoomOut({ key: "v", code: "KeyV", keyCode: 86, ctrlKey: false, metaKey: false }), 200);
+      }}>
+      <TwoDimensionalPlot config={{ path: { value: "/plot_a.versions[0]" } }} />
+    </PanelSetup>
+  ))
+  .add("zooms both axes simultaneously to show reset view button", () => (
+    <PanelSetup
+      fixture={fixture}
+      onMount={() => {
+        setTimeout(() => zoomOut({ key: "b", code: "KeyB", keyCode: 66, ctrlKey: false, metaKey: false }), 200);
       }}>
       <TwoDimensionalPlot config={{ path: { value: "/plot_a.versions[0]" } }} />
     </PanelSetup>

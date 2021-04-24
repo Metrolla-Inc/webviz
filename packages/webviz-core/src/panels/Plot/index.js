@@ -13,7 +13,6 @@ import { hot } from "react-hot-loader/root";
 import { type Time, TimeUtil } from "rosbag";
 
 import helpContent from "./index.help.md";
-import { useExperimentalFeature } from "webviz-core/src/components/ExperimentalFeatures";
 import Flex from "webviz-core/src/components/Flex";
 import { type MessageHistoryItemsByPath } from "webviz-core/src/components/MessageHistoryDEPRECATED";
 import { getTopicsFromPaths } from "webviz-core/src/components/MessagePathSyntax/parseRosPath";
@@ -21,14 +20,14 @@ import { useDecodeMessagePathsForMessagesByTopic } from "webviz-core/src/compone
 import { useMessagePipeline } from "webviz-core/src/components/MessagePipeline";
 import Panel from "webviz-core/src/components/Panel";
 import PanelToolbar from "webviz-core/src/components/PanelToolbar";
-import { getTooltipItemForMessageHistoryItem, type TooltipItem } from "webviz-core/src/components/TimeBasedChart";
+import { getTooltipItemForMessageHistoryItem, type TooltipItem } from "webviz-core/src/components/TimeBasedChart/utils";
 import { useBlocksByTopic, useDataSourceInfo, useMessagesByTopic } from "webviz-core/src/PanelAPI";
 import type { BasePlotPath, PlotPath } from "webviz-core/src/panels/Plot/internalTypes";
 import PlotChart, { getDatasetsAndTooltips, type PlotDataByPath } from "webviz-core/src/panels/Plot/PlotChart";
 import PlotLegend from "webviz-core/src/panels/Plot/PlotLegend";
 import PlotMenu from "webviz-core/src/panels/Plot/PlotMenu";
 import type { PanelConfig } from "webviz-core/src/types/panels";
-import { useShallowMemo } from "webviz-core/src/util/hooks";
+import { useShallowMemo, useGetCurrentValue } from "webviz-core/src/util/hooks";
 import { fromSec, subtractTimes, toSec } from "webviz-core/src/util/time";
 
 export const plotableRosTypes = [
@@ -197,7 +196,7 @@ function Plot(props: Props) {
     messagesByTopic,
   ]);
 
-  const { blocks } = useBlocksByTopic(subscribeTopics);
+  const blocks = useBlocksByTopic(subscribeTopics);
   const blockItemsByPath = useMemo(
     () => (showSingleCurrentMessage ? {} : getBlockItemsByPath(decodeMessagePathsForMessagesByTopic, blocks)),
     [showSingleCurrentMessage, decodeMessagePathsForMessagesByTopic, blocks]
@@ -205,9 +204,13 @@ function Plot(props: Props) {
   const { startTime } = useDataSourceInfo();
 
   // If every streaming key is in the blocks, just use the blocks object for a stable identity.
-  const mergedItems = Object.keys(streamedItemsByPath).every((path) => blockItemsByPath[path] != null)
-    ? blockItemsByPath
-    : { ...streamedItemsByPath, ...blockItemsByPath };
+  const mergedItems = useMemo(
+    () =>
+      Object.keys(streamedItemsByPath).every((path) => blockItemsByPath[path] != null)
+        ? blockItemsByPath
+        : { ...streamedItemsByPath, ...blockItemsByPath },
+    [streamedItemsByPath, blockItemsByPath]
+  );
 
   // Don't filter out disabled paths when passing into getDatasetsAndTooltips, because we still want
   // easy access to the history when turning the disabled paths back on.
@@ -229,60 +232,63 @@ function Plot(props: Props) {
       []
     )
   );
-  const preloading = useExperimentalFeature("preloading");
-
   // Min/max x-values and playback position indicator are only used for preloaded plots. In non-
   // preloaded plots min x-value is always the last seek time, and the max x-value is the current
   // playback time.
   const timeToXValueForPreloading = (t: ?Time): ?number => {
-    if (preloading && xAxisVal === "timestamp" && t && startTime) {
+    if (xAxisVal === "timestamp" && t && startTime) {
       return toSec(subtractTimes(t, startTime));
     }
   };
   const preloadingDisplayTime = timeToXValueForPreloading(currentTime);
   const preloadingStartTime = timeToXValueForPreloading(startTime); // zero or undefined
   const preloadingEndTime = timeToXValueForPreloading(endTime);
-  let defaultView;
-  if (preloadingDisplayTime != null) {
-    if (followingViewWidth != null && parseFloat(followingViewWidth) > 0) {
-      // Will be ignored in TimeBasedChart for non-preloading plots and non-timestamp plots.
-      defaultView = { type: "following", width: parseFloat(followingViewWidth) };
-    } else if (preloadingStartTime != null && preloadingEndTime != null) {
-      defaultView = { type: "fixed", minXValue: preloadingStartTime, maxXValue: preloadingEndTime };
-    }
-  }
-
-  const onClick = useCallback(
-    (_, __, { X_AXIS_ID: seekSeconds }) => {
-      if (!preloading || !startTime || seekSeconds == null || !seek || xAxisVal !== "timestamp") {
-        return;
+  const hasPreloadingDisplayTime = preloadingDisplayTime != null;
+  const defaultView = useMemo(() => {
+    if (hasPreloadingDisplayTime) {
+      if (followingViewWidth != null && parseFloat(followingViewWidth) > 0) {
+        // Will be ignored in TimeBasedChart for non-preloading plots and non-timestamp plots.
+        return { type: "following", width: parseFloat(followingViewWidth) };
+      } else if (preloadingStartTime != null && preloadingEndTime != null) {
+        return { type: "fixed", minXValue: preloadingStartTime, maxXValue: preloadingEndTime };
       }
-      // The player validates and clamps the time.
-      const seekTime = TimeUtil.add(startTime, fromSec(seekSeconds));
-      seek(seekTime);
-    },
-    [preloading, seek, startTime, xAxisVal]
+    }
+    return undefined;
+  }, [followingViewWidth, hasPreloadingDisplayTime, preloadingEndTime, preloadingStartTime]);
+
+  const onClick = useCallback((_, __, { X_AXIS_ID: seekSeconds }) => {
+    if (!startTime || seekSeconds == null || !seek || xAxisVal !== "timestamp") {
+      return;
+    }
+    // The player validates and clamps the time.
+    const seekTime = TimeUtil.add(startTime, fromSec(seekSeconds));
+    seek(seekTime);
+  }, [seek, startTime, xAxisVal]);
+
+  // We want to avoid rerendering the plot menu every frame, but datasets and tooltips change frequently.
+  const getDatasets = useGetCurrentValue(datasets);
+  const getTooltips = useGetCurrentValue(tooltips);
+
+  const plotMenu = useMemo(
+    () => (
+      <PlotMenu
+        displayWidth={followingViewWidth || ""}
+        minYValue={minYValue}
+        maxYValue={maxYValue}
+        saveConfig={saveConfig}
+        setMinMax={setMinMax}
+        setWidth={setWidth}
+        xAxisVal={xAxisVal}
+        getDatasets={getDatasets}
+        getTooltips={getTooltips}
+      />
+    ),
+    [followingViewWidth, minYValue, maxYValue, saveConfig, setMinMax, setWidth, xAxisVal, getDatasets, getTooltips]
   );
 
   return (
     <Flex col clip center style={{ position: "relative" }}>
-      <PanelToolbar
-        helpContent={helpContent}
-        floating
-        menuContent={
-          <PlotMenu
-            displayWidth={followingViewWidth || ""}
-            minYValue={minYValue}
-            maxYValue={maxYValue}
-            saveConfig={saveConfig}
-            setMinMax={setMinMax}
-            setWidth={setWidth}
-            datasets={datasets}
-            xAxisVal={xAxisVal}
-            tooltips={tooltips}
-          />
-        }
-      />
+      <PanelToolbar helpContent={helpContent} floating menuContent={plotMenu} />
       <PlotChart
         paths={yAxisPaths}
         minYValue={parseFloat(minYValue)}
@@ -314,5 +320,13 @@ Plot.defaultConfig = {
   showLegend: true,
   xAxisVal: "timestamp",
 };
+Plot.shortcuts = [
+  { description: "Reset", keys: ["double click"] },
+  { description: "Pan", keys: ["drag"] },
+  { description: "Zoom", keys: ["scroll horizontally"] },
+  { description: "Zoom vertically", keys: ["v" + "scroll"] },
+  { description: "Zoom both vertically and horizontally", keys: ["b" + "scroll"] },
+  { description: "Zoom to percentage (10% - 100%)", keys: ["⌘", "1|2|...|9|0"] },
+];
 
 export default hot(Panel<PlotConfig>(Plot));

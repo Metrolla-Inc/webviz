@@ -9,7 +9,6 @@
 import memoize from "lodash/memoize";
 
 import { getGlobalHooks } from "./loadWebviz";
-import { DIAGNOSTIC_TOPIC } from "./util/globalConstants";
 
 /*
 We've split this code out seperately from the rest of the hooks so that we can lazy load these components by
@@ -21,6 +20,7 @@ export function panelsByCategory() {
   const DiagnosticSummary = require("webviz-core/src/panels/diagnostics/DiagnosticSummary").default;
   const GlobalVariables = require("webviz-core/src/panels/GlobalVariables").default;
   const GlobalVariableSlider = require("webviz-core/src/panels/GlobalVariableSlider").default;
+  const GlobalVariableDropdown = require("webviz-core/src/panels/GlobalVariableDropdown").default;
   const ImageViewPanel = require("webviz-core/src/panels/ImageView").default;
   const Internals = require("webviz-core/src/panels/Internals").default;
   const NodePlayground = require("webviz-core/src/panels/NodePlayground").default;
@@ -57,6 +57,7 @@ export function panelsByCategory() {
   const utilities = [
     { title: "Global Variables", component: GlobalVariables },
     { title: "Global Variable Slider", component: GlobalVariableSlider },
+    { title: "Global Variable Dropdown", component: GlobalVariableDropdown },
     { title: "Node Playground", component: NodePlayground },
     { title: "Notes", component: Note },
     { title: "Tab", component: Tab },
@@ -76,43 +77,47 @@ export function panelsByCategory() {
 export function perPanelHooks() {
   const BlurIcon = require("@mdi/svg/svg/blur.svg").default;
   const GridIcon = require("@mdi/svg/svg/grid.svg").default;
+  const ChartIcon = require("@mdi/svg/svg/chart-line-variant.svg").default;
   const HexagonIcon = require("@mdi/svg/svg/hexagon.svg").default;
   const HexagonMultipleIcon = require("@mdi/svg/svg/hexagon-multiple.svg").default;
   const PentagonOutlineIcon = require("@mdi/svg/svg/pentagon-outline.svg").default;
   const RadarIcon = require("@mdi/svg/svg/radar.svg").default;
   const RobotIcon = require("@mdi/svg/svg/robot.svg").default;
-  const CubeOutline = require("@mdi/svg/svg/cube-outline.svg").default;
-  const LaserScanVert = require("webviz-core/src/panels/ThreeDimensionalViz/LaserScanVert").default;
-  const { defaultMapPalette } = require("webviz-core/src/panels/ThreeDimensionalViz/commands/utils");
   const {
+    GEOMETRY_MSGS_POLYGON_STAMPED_DATATYPE,
+    NAV_MSGS_OCCUPANCY_GRID_DATATYPE,
+    NAV_MSGS_PATH_DATATYPE,
     POINT_CLOUD_DATATYPE,
     POSE_STAMPED_DATATYPE,
+    SENSOR_MSGS_LASER_SCAN_DATATYPE,
     TF_DATATYPE,
+    VISUALIZATION_MSGS_MARKER_DATATYPE,
+    VISUALIZATION_MSGS_MARKER_ARRAY_DATATYPE,
     WEBVIZ_MARKER_DATATYPE,
     WEBVIZ_MARKER_ARRAY_DATATYPE,
+    WEBVIZ_3D_ICON_ARRAY_DATATYPE,
+    DIAGNOSTIC_TOPIC,
   } = require("webviz-core/src/util/globalConstants");
+
+  const sceneBuilderHooks = require("webviz-core/src/panels/ThreeDimensionalViz/SceneBuilder/defaultHooks").default;
+  const supportsOffscreenCanvas = require("webviz-core/src/util/supportsOffscreenCanvas").default;
+  const initLayoutNonWorker = require("webviz-core/src/panels/ThreeDimensionalViz/Layout/LayoutWorker").default;
 
   const SUPPORTED_MARKER_DATATYPES = {
     // generally supported datatypes
-    VISUALIZATION_MSGS_MARKER_DATATYPE: "visualization_msgs/Marker",
-    VISUALIZATION_MSGS_MARKER_ARRAY_DATATYPE: "visualization_msgs/MarkerArray",
+    VISUALIZATION_MSGS_MARKER_DATATYPE,
+    VISUALIZATION_MSGS_MARKER_ARRAY_DATATYPE,
     WEBVIZ_MARKER_DATATYPE,
     WEBVIZ_MARKER_ARRAY_DATATYPE,
+    WEBVIZ_3D_ICON_ARRAY_DATATYPE,
     POSE_STAMPED_DATATYPE,
     POINT_CLOUD_DATATYPE,
-    SENSOR_MSGS_LASER_SCAN_DATATYPE: "sensor_msgs/LaserScan",
-    NAV_MSGS_OCCUPANCY_GRID_DATATYPE: "nav_msgs/OccupancyGrid",
-    GEOMETRY_MSGS_POLYGON_STAMPED_DATATYPE: "geometry_msgs/PolygonStamped",
+    SENSOR_MSGS_LASER_SCAN_DATATYPE,
+    NAV_MSGS_PATH_DATATYPE,
+    NAV_MSGS_OCCUPANCY_GRID_DATATYPE,
+    GEOMETRY_MSGS_POLYGON_STAMPED_DATATYPE,
     TF_DATATYPE,
   };
-  const SUPPORTED_BOBJECT_MARKER_DATATYPES = new Set([
-    SUPPORTED_MARKER_DATATYPES.VISUALIZATION_MSGS_MARKER_DATATYPE,
-    SUPPORTED_MARKER_DATATYPES.VISUALIZATION_MSGS_MARKER_ARRAY_DATATYPE,
-    WEBVIZ_MARKER_DATATYPE,
-    WEBVIZ_MARKER_ARRAY_DATATYPE,
-    POSE_STAMPED_DATATYPE,
-    POINT_CLOUD_DATATYPE,
-  ]);
 
   return {
     DiagnosticSummary: {
@@ -134,7 +139,7 @@ export function perPanelHooks() {
         zoomPercentage: 100,
         offset: [0, 0],
       },
-      imageMarkerDatatypes: ["visualization_msgs/ImageMarker"],
+      imageMarkerDatatypes: ["visualization_msgs/ImageMarker", "webviz_msgs/ImageMarkerArray"],
       canTransformMarkersByTopic: (topic) => !topic.includes("rect"),
     },
     GlobalVariableSlider: {
@@ -153,39 +158,17 @@ export function perPanelHooks() {
         autoSyncCameraState: false,
         autoTextBackgroundColor: true,
       },
-      SUPPORTED_BOBJECT_MARKER_DATATYPES,
+      topicSettingsEditors: {},
       SUPPORTED_MARKER_DATATYPES,
       BLACKLIST_TOPICS: [],
-      iconsByClassification: { DEFAULT: CubeOutline },
-      allSupportedMarkers: [
-        "arrow",
-        "cube",
-        "cubeList",
-        "cylinder",
-        "filledPolygon",
-        "grid",
-        "instancedLineList",
-        "laserScan",
-        "linedConvexHull",
-        "lineList",
-        "lineStrip",
-        "overlayIcon",
-        "pointcloud",
-        "points",
-        "poseMarker",
-        "sphere",
-        "sphereList",
-        "text",
-        "triangleList",
-      ],
-      renderAdditionalMarkers: () => {},
       topics: [],
       iconsByDatatype: {
-        "visualization_msgs/Marker": HexagonIcon,
-        "visualization_msgs/MarkerArray": HexagonMultipleIcon,
-        "nav_msgs/OccupancyGrid": GridIcon,
-        "sensor_msgs/LaserScan": RadarIcon,
-        "geometry_msgs/PolygonStamped": PentagonOutlineIcon,
+        [VISUALIZATION_MSGS_MARKER_DATATYPE]: HexagonIcon,
+        [VISUALIZATION_MSGS_MARKER_ARRAY_DATATYPE]: HexagonMultipleIcon,
+        [NAV_MSGS_OCCUPANCY_GRID_DATATYPE]: GridIcon,
+        [NAV_MSGS_PATH_DATATYPE]: ChartIcon,
+        [SENSOR_MSGS_LASER_SCAN_DATATYPE]: RadarIcon,
+        [GEOMETRY_MSGS_POLYGON_STAMPED_DATATYPE]: PentagonOutlineIcon,
         [POINT_CLOUD_DATATYPE]: BlurIcon,
         [POSE_STAMPED_DATATYPE]: RobotIcon,
         [WEBVIZ_MARKER_DATATYPE]: HexagonIcon,
@@ -194,37 +177,24 @@ export function perPanelHooks() {
       // TODO(Audrey): remove icons config after topic group release
       icons: {},
       AdditionalToolbarItems: () => null,
-      LaserScanVert,
-      getSelectionState: () => {},
-      getTopicsToRender: () => new Set(),
-      consumeMessage: (topic, datatype, msg, consumeMethods, { errors }) => {
-        // TF messages are consumed by TransformBuilder, not SceneBuilder.
-        if (datatype === SUPPORTED_MARKER_DATATYPES.TF_DATATYPE) {
-          return;
+      // TODO(useWorkerIn3DPanel): Remove sceneBuilderHooks when flag is deleted.
+      sceneBuilderHooks,
+      useWorldContextValue: require("webviz-core/src/panels/ThreeDimensionalViz/SceneBuilder/useWorldContextValue")
+        .default,
+      getLayoutWorker: () => {
+        if (supportsOffscreenCanvas()) {
+          const WorkerType = require("webviz-core/src/panels/ThreeDimensionalViz/Layout/Layout.worker");
+          return new WorkerType();
         }
-        errors.topicsWithError.set(topic, `Unrecognized topic datatype for scene: ${datatype}`);
+        return initLayoutNonWorker(sceneBuilderHooks);
       },
-      consumeBobject: (topic, datatype, msg, consumeMethods, { errors }) => {
-        // TF messages are consumed by TransformBuilder, not SceneBuilder.
-        if (datatype === SUPPORTED_MARKER_DATATYPES.TF_DATATYPE) {
-          return;
-        }
-        errors.topicsWithError.set(topic, `Unrecognized topic datatype for scene: ${datatype}`);
-      },
-      addMarkerToCollector: () => false,
-      getSyntheticArrowMarkerColor: () => ({ r: 0, g: 0, b: 1, a: 0.5 }),
-      getFlattenedPose: () => undefined,
-      getOccupancyGridValues: (_topic) => [0.5, "map"],
-      getMapPalette() {
-        return defaultMapPalette;
-      },
+      // Duplicated in sceneBuilderHooks
       consumePose: () => {},
-      getMarkerColor: (topic, markerColor) => markerColor,
+      skipTransformFrame: null,
+
       ungroupedNodesCategory: "Topics",
       rootTransformFrame: "map",
       defaultFollowTransformFrame: null,
-      skipTransformFrame: null,
-      useWorldspacePointSize: () => true,
     },
     RawMessages: { docLinkFunction: (filename) => `https://www.google.com/search?q=${filename}` },
   };

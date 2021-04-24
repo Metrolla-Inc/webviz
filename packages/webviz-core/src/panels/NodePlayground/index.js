@@ -24,6 +24,7 @@ import Icon from "webviz-core/src/components/Icon";
 import Item from "webviz-core/src/components/Menu/Item";
 import Panel from "webviz-core/src/components/Panel";
 import PanelToolbar from "webviz-core/src/components/PanelToolbar";
+import ResizableSplitFlex from "webviz-core/src/components/ResizableSplitFlex";
 import SpinningLoadingIcon from "webviz-core/src/components/SpinningLoadingIcon";
 import TextContent from "webviz-core/src/components/TextContent";
 import BottomBar from "webviz-core/src/panels/NodePlayground/BottomBar";
@@ -147,6 +148,12 @@ function NodePlayground(props: Props) {
   const { autoFormatOnSave, selectedNodeId, editorForStorybook, vimMode } = config;
 
   const [explorer, updateExplorer] = React.useState<Explorer>(null);
+  const [bottomBarSplitPercent, setBottomBarSplitPercent] = React.useState<number>(1);
+
+  const bottomBarOpen = bottomBarSplitPercent < 0.95;
+  const toggleBottomBarOpen = React.useCallback(() => setBottomBarSplitPercent(bottomBarOpen ? 1 : 0.8), [
+    bottomBarOpen,
+  ]);
 
   const userNodes = useSelector((state) => state.persistedState.panels.userNodes);
   const userNodeDiagnostics = useSelector((state) => state.userNodes.userNodeDiagnostics);
@@ -177,76 +184,58 @@ function NodePlayground(props: Props) {
     width: `${inputTitle.length + 4}ch`, // Width based on character count of title + padding
   };
 
-  React.useLayoutEffect(
-    () => {
-      if (selectedNode) {
-        const testItems = props.config.additionalBackStackItems || [];
-        setScriptBackStack([
-          { filePath: selectedNode.name, code: selectedNode.sourceCode, readOnly: false },
-          ...testItems,
-        ]);
+  React.useLayoutEffect(() => {
+    if (selectedNode) {
+      const testItems = props.config.additionalBackStackItems || [];
+      setScriptBackStack([
+        { filePath: selectedNode.name, code: selectedNode.sourceCode, readOnly: false },
+        ...testItems,
+      ]);
+    }
+  }, [props.config.additionalBackStackItems, selectedNode]);
+
+  const addNewNode = React.useCallback((_, code?: string) => {
+    const newNodeId = uuid.v4();
+    const sourceCode = code || skeletonBody;
+    // TODO: Add integration test for this flow.
+    setUserNodes({
+      [newNodeId]: {
+        sourceCode,
+        name: `${DEFAULT_WEBVIZ_NODE_PREFIX}${newNodeId.split("-")[0]}`,
+      },
+    });
+    saveConfig({ selectedNodeId: newNodeId });
+  }, [saveConfig, setUserNodes]);
+
+  const saveNode = React.useCallback((script) => {
+    if (!selectedNodeId || !script) {
+      return;
+    }
+    setUserNodes({ [selectedNodeId]: { ...selectedNode, sourceCode: script } });
+  }, [selectedNode, selectedNodeId, setUserNodes]);
+
+  const setScriptOverride = React.useCallback((script: Script, maxDepth?: number) => {
+    if (maxDepth && scriptBackStack.length >= maxDepth) {
+      setScriptBackStack([...scriptBackStack.slice(0, maxDepth - 1), script]);
+    } else {
+      setScriptBackStack([...scriptBackStack, script]);
+    }
+  }, [scriptBackStack]);
+
+  const goBack = React.useCallback(() => {
+    setScriptBackStack(scriptBackStack.slice(0, scriptBackStack.length - 1));
+  }, [scriptBackStack]);
+
+  const setScriptCode = React.useCallback((code: string) => {
+    // update code at top of backstack
+    const backStack = [...scriptBackStack];
+    if (backStack.length > 0) {
+      const script = backStack.pop();
+      if (!script.readOnly) {
+        setScriptBackStack([...backStack, { ...script, code }]);
       }
-    },
-    [props.config.additionalBackStackItems, selectedNode]
-  );
-
-  const addNewNode = React.useCallback(
-    (_, code?: string) => {
-      const newNodeId = uuid.v4();
-      const sourceCode = code || skeletonBody;
-      // TODO: Add integration test for this flow.
-      setUserNodes({
-        [newNodeId]: {
-          sourceCode,
-          name: `${DEFAULT_WEBVIZ_NODE_PREFIX}${newNodeId.split("-")[0]}`,
-        },
-      });
-      saveConfig({ selectedNodeId: newNodeId });
-    },
-    [saveConfig, setUserNodes]
-  );
-
-  const saveNode = React.useCallback(
-    (script) => {
-      if (!selectedNodeId || !script) {
-        return;
-      }
-      setUserNodes({ [selectedNodeId]: { ...selectedNode, sourceCode: script } });
-    },
-    [selectedNode, selectedNodeId, setUserNodes]
-  );
-
-  const setScriptOverride = React.useCallback(
-    (script: Script, maxDepth?: number) => {
-      if (maxDepth && scriptBackStack.length >= maxDepth) {
-        setScriptBackStack([...scriptBackStack.slice(0, maxDepth - 1), script]);
-      } else {
-        setScriptBackStack([...scriptBackStack, script]);
-      }
-    },
-    [scriptBackStack]
-  );
-
-  const goBack = React.useCallback(
-    () => {
-      setScriptBackStack(scriptBackStack.slice(0, scriptBackStack.length - 1));
-    },
-    [scriptBackStack]
-  );
-
-  const setScriptCode = React.useCallback(
-    (code: string) => {
-      // update code at top of backstack
-      const backStack = [...scriptBackStack];
-      if (backStack.length > 0) {
-        const script = backStack.pop();
-        if (!script.readOnly) {
-          setScriptBackStack([...backStack, { ...script, code }]);
-        }
-      }
-    },
-    [scriptBackStack]
-  );
+    }
+  }, [scriptBackStack]);
 
   return (
     <Dimensions>
@@ -322,45 +311,52 @@ function NodePlayground(props: Props) {
 
               <Flex col style={{ flexGrow: 1, position: "relative" }}>
                 {!selectedNodeId && <WelcomeScreen addNewNode={addNewNode} updateExplorer={updateExplorer} />}
-                <div
-                  key={`${height}x${width}`}
-                  data-nativeundoredo="true"
-                  style={{
-                    height: "100%",
-                    width: "100%",
-                    display: selectedNodeId
-                      ? "initial"
-                      : "none" /* Ensures the monaco-editor starts loading before the user opens it */,
-                  }}>
-                  <React.Suspense
-                    fallback={
-                      <Flex center style={{ width: "100%", height: "100%" }}>
-                        <Icon large>
-                          <SpinningLoadingIcon />
-                        </Icon>
-                      </Flex>
-                    }>
-                    {editorForStorybook || (
-                      <Editor
-                        autoFormatOnSave={!!autoFormatOnSave}
-                        script={currentScript}
-                        setScriptCode={setScriptCode}
-                        setScriptOverride={setScriptOverride}
-                        vimMode={vimMode}
-                        rosLib={rosLib}
-                        resizeKey={`${width}-${height}-${explorer || "none"}-${selectedNodeId || "none"}`}
-                        save={saveNode}
-                      />
-                    )}
-                  </React.Suspense>
-                </div>
-                <BottomBar
-                  nodeId={selectedNodeId}
-                  isSaved={isNodeSaved}
-                  save={() => saveNode(currentScript?.code)}
-                  diagnostics={selectedNodeDiagnostics}
-                  logs={selectedNodeLogs}
-                />
+
+                <ResizableSplitFlex column splitPercent={bottomBarSplitPercent} onChange={setBottomBarSplitPercent}>
+                  <div
+                    key={`${height}x${width}`}
+                    data-nativeundoredo="true"
+                    style={{
+                      height: "100%",
+                      width: "100%",
+                      display: selectedNodeId
+                        ? "initial"
+                        : "none" /* Ensures the monaco-editor starts loading before the user opens it */,
+                    }}>
+                    <React.Suspense
+                      fallback={
+                        <Flex center style={{ width: "100%", height: "100%" }}>
+                          <Icon large>
+                            <SpinningLoadingIcon />
+                          </Icon>
+                        </Flex>
+                      }>
+                      {editorForStorybook || (
+                        <Editor
+                          autoFormatOnSave={!!autoFormatOnSave}
+                          script={currentScript}
+                          setScriptCode={setScriptCode}
+                          setScriptOverride={setScriptOverride}
+                          vimMode={vimMode}
+                          rosLib={rosLib}
+                          resizeKey={`${width}-${height}-${explorer || "none"}-${selectedNodeId || "none"}`}
+                          save={saveNode}
+                        />
+                      )}
+                    </React.Suspense>
+                  </div>
+                  <div style={{ width: "100%", height: "100%", minHeight: "28px" }}>
+                    <BottomBar
+                      nodeId={selectedNodeId}
+                      isSaved={isNodeSaved}
+                      save={() => saveNode(currentScript?.code)}
+                      diagnostics={selectedNodeDiagnostics}
+                      logs={selectedNodeLogs}
+                      open={bottomBarOpen}
+                      toggleBottomBarOpen={toggleBottomBarOpen}
+                    />
+                  </div>
+                </ResizableSplitFlex>
               </Flex>
             </Flex>
           </Flex>
